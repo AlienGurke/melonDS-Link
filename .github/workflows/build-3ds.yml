@@ -1,0 +1,33 @@
+name: 3DS (melonDS Link)
+
+on:
+  push:
+    branches:
+      - master
+      - ci/*
+    paths:
+      - 'link3ds/**'
+      - 'src/frontend/qt_sdl/LinkProto.h'
+      - '.github/workflows/build-3ds.yml'
+  pull_request:
+    paths:
+      - 'link3ds/**'
+      - 'src/frontend/qt_sdl/LinkProto.h'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: link3ds
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    steps:
+    - name: Check out sources
+      uses: actions/checkout@v6
+    - name: Build
+      run: make -C link3ds
+    - uses: actions/upload-artifact@v7
+      with:
+        name: melonDS-Link-3ds
+        path: |
+          link3ds/melonDS-Link.3dsx
+          link3ds/melonDS-Link.smdh

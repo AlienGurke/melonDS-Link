@@ -24,6 +24,7 @@
 #include "SDL_sensor.h"
 #include "main.h"
 #include "Config.h"
+#include "LinkClient.h"
 
 using namespace melonDS;
 
@@ -92,6 +93,9 @@ void EmuInstance::inputInit()
     lastHotkeyMask = 0;
 
     isTouching = false;
+    linkTouching = false;
+    linkTouchX = 0;
+    linkTouchY = 0;
     touchX = 0;
     touchY = 0;
 
@@ -451,6 +455,40 @@ void EmuInstance::inputProcess()
         for (int i = 0; i < HK_MAX; i++)
             if (joystickButtonDown(hkJoyMapping[i]))
                 joyHotkeyMask |= (1 << i);
+    }
+
+    // melonDS Link: buttons and touch from a 3DS over WiFi
+    linkTouching = false;
+    if (instanceID == 0 && Link::Get().GetState() == Link::State::Connected)
+    {
+        Link::InputSnapshot in = Link::Get().GetInput();
+        if (in.valid)
+        {
+            // the low 12 bits of the 3DS HID layout match the DS keys 1:1
+            u32 pressed = in.keys & 0xFFF;
+            // circle pad acts as D-pad
+            if (in.keys & LINK_KEY_CPAD_RIGHT) pressed |= (1 << 4);
+            if (in.keys & LINK_KEY_CPAD_LEFT)  pressed |= (1 << 5);
+            if (in.keys & LINK_KEY_CPAD_UP)    pressed |= (1 << 6);
+            if (in.keys & LINK_KEY_CPAD_DOWN)  pressed |= (1 << 7);
+            inputMask &= ~pressed;
+
+            // ZR: fast forward (hold), ZL: swap screens
+            if (in.keys & LINK_KEY_ZR) joyHotkeyMask |= (1 << HK_FastForward);
+            if (in.keys & LINK_KEY_ZL) joyHotkeyMask |= (1 << HK_SwapScreens);
+
+            if (in.keys & LINK_KEY_TOUCH)
+            {
+                int x = (int)in.touchX - LINK_DS_OFFSET_X;
+                int y = (int)in.touchY - LINK_DS_OFFSET_Y;
+                if (x >= 0 && x < 256 && y >= 0 && y < 192)
+                {
+                    linkTouching = true;
+                    linkTouchX = (u16)x;
+                    linkTouchY = (u16)y;
+                }
+            }
+        }
     }
 
     hotkeyMask = keyHotkeyMask | joyHotkeyMask;

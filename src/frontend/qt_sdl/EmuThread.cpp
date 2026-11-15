@@ -54,6 +54,7 @@
 #include "Savestate.h"
 
 #include "EmuInstance.h"
+#include "LinkClient.h"
 
 using namespace melonDS;
 
@@ -157,6 +158,13 @@ void EmuThread::run()
 
         emuInstance->inputProcess();
 
+        if (emuInstance->instanceID == 0)
+        {
+            std::string linkMsg;
+            while (Link::Get().PopMessage(linkMsg))
+                emuInstance->osdAddMessage(0, "%s", linkMsg.c_str());
+        }
+
         if (emuInstance->hotkeyPressed(HK_FrameLimitToggle)) emit windowLimitFPSChange();
 
         if (emuInstance->hotkeyPressed(HK_Pause)) emuTogglePause();
@@ -254,7 +262,9 @@ void EmuThread::run()
             // process input and hotkeys
             emuInstance->nds->SetKeyMask(emuInstance->inputMask);
 
-            if (emuInstance->isTouching)
+            if (emuInstance->linkTouching)
+                emuInstance->nds->TouchScreen(emuInstance->linkTouchX, emuInstance->linkTouchY);
+            else if (emuInstance->isTouching)
                 emuInstance->nds->TouchScreen(emuInstance->touchX, emuInstance->touchY);
             else
                 emuInstance->nds->ReleaseScreen();

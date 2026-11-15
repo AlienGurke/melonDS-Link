@@ -378,6 +378,10 @@ private:
     bool isTouching;
     melonDS::u16 touchX, touchY;
 
+    // touch coming from a 3DS via melonDS Link (takes priority over the mouse)
+    bool linkTouching;
+    melonDS::u16 linkTouchX, linkTouchY;
+
     friend class EmuThread;
     friend class MainWindow;
 };

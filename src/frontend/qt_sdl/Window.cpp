@@ -74,6 +74,7 @@
 #include "CameraManager.h"
 #include "Window.h"
 #include "AboutDialog.h"
+#include "LinkClient.h"
 
 using namespace melonDS;
 
@@ -623,6 +624,27 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             actAudioSync = menu->addAction("Audio sync");
             actAudioSync->setCheckable(true);
             connect(actAudioSync, &QAction::triggered, this, &MainWindow::onChangeAudioSync);
+        }
+        {
+            QMenu * menu = menubar->addMenu("3DS Link");
+
+            actLinkConnect = menu->addAction("Mit 3DS verbinden...");
+            connect(actLinkConnect, &QAction::triggered, this, &MainWindow::onLinkConnect);
+
+            actLinkDisconnect = menu->addAction("Trennen");
+            connect(actLinkDisconnect, &QAction::triggered, this, &MainWindow::onLinkDisconnect);
+
+            connect(menu, &QMenu::aboutToShow, this, [this]
+            {
+                auto st = Link::Get().GetState();
+                actLinkDisconnect->setEnabled(st != Link::State::Disconnected);
+                if (st == Link::State::Connected)
+                    actLinkConnect->setText("Verbunden mit " + QString::fromStdString(Link::Get().GetHost()) + " - neu verbinden...");
+                else if (st == Link::State::Connecting)
+                    actLinkConnect->setText("Verbinde mit " + QString::fromStdString(Link::Get().GetHost()) + "... - andere IP...");
+                else
+                    actLinkConnect->setText("Mit 3DS verbinden...");
+            });
         }
         {
             QMenu * menu = menubar->addMenu("Help");
@@ -1751,6 +1773,28 @@ void MainWindow::onLANStartClient()
 {
     if (!lanWarning(false)) return;
     LANStartClientDialog::openDlg(this);
+}
+
+void MainWindow::onLinkConnect()
+{
+    QString last = globalCfg.GetQString("Link.Host");
+    bool ok = false;
+    QString host = QInputDialog::getText(this, "melonDS Link",
+        "IP-Adresse des 3DS (steht oben auf dem 3DS-Bildschirm in der melonDS-Link-App):",
+        QLineEdit::Normal, last, &ok).trimmed();
+    if (!ok || host.isEmpty()) return;
+
+    globalCfg.SetQString("Link.Host", host);
+    Config::Save();
+
+    Link::Get().Connect(host.toStdString());
+    emuInstance->osdAddMessage(0, "3DS Link: verbinde mit %s...", host.toStdString().c_str());
+}
+
+void MainWindow::onLinkDisconnect()
+{
+    Link::Get().Disconnect();
+    emuInstance->osdAddMessage(0, "3DS Link: getrennt");
 }
 
 void MainWindow::onNPStartHost()
