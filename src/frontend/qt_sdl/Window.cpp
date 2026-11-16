@@ -79,6 +79,7 @@
 #include "AboutDialog.h"
 #include "LinkClient.h"
 #include "LinkSession.h"
+#include "LinkRomDialog.h"
 #include "SaveManager.h"
 
 using namespace melonDS;
@@ -707,7 +708,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                                  best.block ? "blockierend" : "abfragend", best.buf / 1024, best.piece / 1024, (int)(bestRate / 1024));
                         Link::Session::Log(sum);
                         text = "Ergebnisse (3DS -> PC, reine WLAN-Geschwindigkeit):\n\n" + table + "\n" + QString(sum) +
-                               "\n\nZum Vergleich: ftpd/WinSCP ca. 1600 KB/s.\nAlles steht auch in melonDS-Link\\link-log.txt.";
+                               "\n\nDie Werte schwanken je nach WLAN-Auslastung stark; ein Test ist nur eine Momentaufnahme.\nAlles steht auch in melonDS-Link\\link-log.txt.";
                         QMetaObject::invokeMethod(this, [this, best]
                         {
                             globalCfg.SetInt("Link.SendBuf", (int)best.buf);
@@ -729,6 +730,8 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             });
 
             menu->addSeparator();
+            QAction* actLinkRoms = menu->addAction("ROMs vom 3DS (vorab kopieren)...");
+            connect(actLinkRoms, &QAction::triggered, this, [this] { LinkRomDialog::openDlg(this); });
             QAction* actLinkFolder = menu->addAction("Backup- und ROM-Ordner oeffnen");
             connect(actLinkFolder, &QAction::triggered, this, []
             {
@@ -750,6 +753,14 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     t.piece = (uint32_t)std::max(0, globalCfg.GetInt("Link.SendPiece"));
                     t.sleepUs = (uint32_t)std::max(0, globalCfg.GetInt("Link.SendPauseUs"));
                     if (t.sndbuf) t.flags = LINK_TUNE_SET | (globalCfg.GetInt("Link.SendBlocking") ? LINK_TUNE_BLOCKING : 0);
+                    else
+                    {
+                        // no own test yet: the best on average in the tests so far
+                        t.sndbuf = 262144;
+                        t.piece = 262144;
+                        t.sleepUs = 500;
+                        t.flags = LINK_TUNE_SET | LINK_TUNE_BLOCKING;
+                    }
                     Link::Get().SetDefaultTuning(t);
                 }
                 linkTimer = new QTimer(this);
@@ -1917,6 +1928,15 @@ void MainWindow::onLinkConnect()
 void MainWindow::onLinkTick()
 {
     if (Link::Get().GetState() == Link::State::Disconnected) return;
+
+    // after every (re)connect: tell the 3DS which games are on the PC
+    static uint32_t syncedConnection = 0;
+    uint32_t conn = Link::Get().ConnectionCount();
+    if (conn != syncedConnection && Link::Get().GetState() == Link::State::Connected)
+    {
+        syncedConnection = conn;
+        Link::Session::Get().RequestOnPcSync();
+    }
 
     std::string rom = Link::Session::Get().Tick(this, localCfg.GetString("SaveFilePath"));
     if (rom.empty()) return;

@@ -578,6 +578,7 @@ void Client::worker(std::string host)
         }
 
         state = State::Connected;
+        connectCount++;
         pushMessage(std::string("3DS Link: verbunden mit ") + hello.name + " (" + host + ")");
         everConnected = true;
         SetStatusText("melonDS verbunden");

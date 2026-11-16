@@ -27,6 +27,14 @@ A startet, X markiert als Favorit (steht dann mit * oben), Y lädt die Liste neu
 B schließt sie. Beim Start steht die Auswahl auf dem zuletzt gespielten Spiel.
 Favoriten: `sd:/3ds/melonDS-Link-favoriten.txt`. **C-Stick nach unten** öffnet die
 Liste jederzeit; solange sie offen ist, bekommt das Spiel keine Eingaben.
+Spiele mit grünem **PC** am Ende liegen schon vollständig auf dem PC und starten sofort.
+
+**ROMs vorab kopieren:** in melonDS **3DS Link → ROMs vom 3DS (vorab kopieren)…**.
+Das Fenster zeigt alle Spiele des 3DS mit Status (*auf dem PC*, *angefangen*, *fehlt*).
+„Alle fehlenden kopieren“ oder einzelne anhaken. Anhalten ist jederzeit möglich –
+der kopierte Teil bleibt erhalten und wird beim nächsten Mal fortgesetzt (auch beim
+Spielstart). Wählt man währenddessen auf dem 3DS ein Spiel, hält das Vorladen an und
+das Spiel geht vor. Während des Kopierens steht der untere 3DS-Bildschirm still.
 
 **Anzeigemodi** (C-Stick nach oben wechselt, die Wahl wird gespeichert):
 - *Vergrößert* (Standard): auf den ganzen 3DS-Bildschirm (320×240) skaliert.

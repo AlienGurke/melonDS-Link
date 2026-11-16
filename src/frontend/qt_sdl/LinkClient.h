@@ -60,6 +60,8 @@ public:
     void Disconnect();
 
     State GetState() const { return state.load(); }
+    // counts up on every successful (re)connect
+    uint32_t ConnectionCount() const { return connectCount.load(); }
     std::string GetHost();
 
     // latest input from the 3DS; invalid if nothing arrived for 500 ms
@@ -121,6 +123,7 @@ private:
     void sendTiles(const std::vector<uint16_t>& frame);
 
     std::atomic<State> state { State::Disconnected };
+    std::atomic<uint32_t> connectCount { 0 };
     std::atomic<bool> stopRequested { false };
     std::thread thread;
 

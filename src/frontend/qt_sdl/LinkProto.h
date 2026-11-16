@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        8u
+#define LINK_VERSION        9u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -58,6 +58,10 @@ enum LinkCommand
                                 with the given send settings */
     LINK_CMD_GETSTATS   = 14,/* in: -   out: text with the 3DS transfer statistics */
     LINK_CMD_SETTUNING  = 15,/* in: LinkTuning: use these send settings from now on */
+    LINK_CMD_GAMELIST   = 16,/* in: -   out: u16 dirLen + ROM folder of the 3DS app,
+                                then LinkDirEntry list of its .nds files */
+    LINK_CMD_SETONPC    = 17,/* in: file names (one per line) of the games that are
+                                completely on the PC (marked in the 3DS list) */
 };
 
 /* send settings of the 3DS (0 = keep the current value) */

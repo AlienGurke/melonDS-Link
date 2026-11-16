@@ -64,10 +64,10 @@ static volatile u64 g_statReadTicks, g_statReadBytes;   /* SD card */
 static volatile u64 g_statPackTicks, g_statPackBytes;   /* LZ4 */
 
 /* send settings, adjustable from melonDS (LINK_CMD_SETTUNING / speed test) */
-static volatile u32 g_sendPiece = 0x10000;     /* bytes per send() call */
+static volatile u32 g_sendPiece = 0x40000;     /* bytes per send() call */
 static volatile u32 g_sendSleepUs = 500;       /* pause when the send buffer is full */
-static volatile u32 g_sendBuf = 32768;         /* SO_SNDBUF of the data connection */
-static volatile bool g_sendBlocking = false;   /* blocking sends during big transfers */
+static volatile u32 g_sendBuf = 0x40000;       /* SO_SNDBUF of the data connection */
+static volatile bool g_sendBlocking = true;    /* blocking sends during big transfers (best on average) */
 
 /* During a big transfer nobody else uses the socket service (g_bulkActive),
    so the sender may wait inside it like ftpd does: the system wakes it as soon
@@ -190,6 +190,20 @@ static char g_eventSave[LINK_MAX_PATH];
 static char* g_favs[MAX_FAVS];
 static int g_favCount = 0;
 static char g_lastGame[256] = "";   /* file name of the last launched game */
+
+/* games that are completely on the PC already (sent by melonDS, guarded by g_lock) */
+#define MAX_ONPC 512
+static char* g_onPcBuf = NULL;
+static char* g_onPc[MAX_ONPC];
+static int g_onPcCount = 0;
+static volatile u32 g_onPcVersion = 0;   /* changes whenever the set changes */
+
+static bool isOnPcLocked(const char* name)
+{
+    for (int i = 0; i < g_onPcCount; i++)
+        if (strcasecmp(g_onPc[i], name) == 0) return true;
+    return false;
+}
 
 static bool isFav(const char* name)
 {
@@ -802,6 +816,67 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             int b = (int)t.sndbuf;
             setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &b, sizeof(b));
         }
+        return sendResponse(fd, h, LINK_OK, NULL, 0);
+    }
+
+    case LINK_CMD_GAMELIST:
+    {
+        /* the folder the list on the 3DS shows, and its .nds files with sizes */
+        char dir[128];
+        LightLock_Lock(&g_lock);
+        snprintf(dir, sizeof(dir), "%s", g_romDir);
+        LightLock_Unlock(&g_lock);
+        uint16_t dirLen = (uint16_t)strlen(dir);
+        memcpy(g_outbuf, &dirLen, 2);
+        memcpy(g_outbuf + 2, dir, dirLen);
+        uint32_t used = 2 + dirLen;
+
+        snprintf(path, sizeof(path), "sdmc:%s", dir);
+        DIR* d = opendir(path);
+        if (d)
+        {
+            struct dirent* e;
+            while ((e = readdir(d)) != NULL)
+            {
+                size_t nameLen = strlen(e->d_name);
+                if (e->d_type == DT_DIR || nameLen == 0 || nameLen > 255 || !hasNdsExt(e->d_name)) continue;
+                if (used + sizeof(LinkDirEntry) + nameLen > LINK_MAX_PAYLOAD) break;
+                LinkDirEntry de;
+                memset(&de, 0, sizeof(de));
+                de.nameLen = (uint8_t)nameLen;
+                char full[LINK_MAX_PATH * 2 + 16];
+                snprintf(full, sizeof(full), "%s/%s", path, e->d_name);
+                struct stat st;
+                if (stat(full, &st) == 0) de.size = (uint64_t)st.st_size;
+                memcpy(g_outbuf + used, &de, sizeof(de));
+                memcpy(g_outbuf + used + sizeof(de), e->d_name, nameLen);
+                used += sizeof(de) + nameLen;
+            }
+            closedir(d);
+        }
+        return sendResponse(fd, h, LINK_OK, g_outbuf, used);
+    }
+
+    case LINK_CMD_SETONPC:
+    {
+        char* buf = (char*)malloc(h->len + 1);
+        if (!buf) return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
+        memcpy(buf, payload, h->len);
+        buf[h->len] = '\0';
+        LightLock_Lock(&g_lock);
+        free(g_onPcBuf);
+        g_onPcBuf = buf;
+        g_onPcCount = 0;
+        for (char* p = buf; *p && g_onPcCount < MAX_ONPC; )
+        {
+            char* nl = strchr(p, '\n');
+            if (nl) *nl = '\0';
+            if (*p) g_onPc[g_onPcCount++] = p;
+            if (!nl) break;
+            p = nl + 1;
+        }
+        g_onPcVersion++;
+        LightLock_Unlock(&g_lock);
         return sendResponse(fd, h, LINK_OK, NULL, 0);
     }
 
@@ -1594,15 +1669,19 @@ int main(int argc, char** argv)
                     size_t n = strlen(name);
                     if (n > 4 && strcasecmp(name + n - 4, ".nds") == 0) name[n - 4] = '\0';
                     bool fav = isFav(g_games[i]);
-                    if (i == menuCursor) setLine(11 + r, "\x1b[47;30m>%c%-47.47s", fav ? '*' : ' ', name);
-                    else if (fav) setLine(11 + r, "\x1b[33m*\x1b[0m %-47.47s", name);
-                    else setLine(11 + r, "  %-47.47s", name);
+                    LightLock_Lock(&g_lock);
+                    bool pc = isOnPcLocked(g_games[i]);
+                    LightLock_Unlock(&g_lock);
+                    /* "PC" at the end: already copied, starts right away */
+                    if (i == menuCursor) setLine(11 + r, "\x1b[47;30m>%c%-44.44s%s", fav ? '*' : ' ', name, pc ? " PC" : "   ");
+                    else if (fav) setLine(11 + r, "\x1b[33m*\x1b[0m %-44.44s\x1b[32m%s", name, pc ? " PC" : "");
+                    else setLine(11 + r, "  %-44.44s\x1b[32m%s", name, pc ? " PC" : "");
                 }
                 else if (r == 0 && g_gameCount == 0)
                     setLine(11 + r, "\x1b[31m  Keine .nds-Dateien gefunden.");
                 else setLine(11 + r, "");
             }
-            setLine(26, "\x1b[90mA starten  X Favorit  Y neu laden%s", g_gameStarted ? "  B zurueck" : "");
+            setLine(26, "\x1b[90mA starten X Favorit Y neu%s  \x1b[32mPC\x1b[90m=kopiert", g_gameStarted ? " B zurueck" : "");
         }
         else
         {
