@@ -10,7 +10,7 @@ on:
       - master
 
 env:
-  CRASH_OFFSETS: ''
+  CRASH_OFFSETS: '0x32d7cf'
   MELONDS_GIT_BRANCH: ${{ github.ref }}
   MELONDS_GIT_HASH: ${{ github.sha }}
   MELONDS_BUILD_PROVIDER: GitHub Actions
