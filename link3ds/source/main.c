@@ -325,7 +325,8 @@ static void serverThread(void* arg)
 /* ------------------------------------------------------------------ */
 /* DS bottom screen image (filled by the video thread)                 */
 
-static u16 g_dsImage[192 * 256];          /* RGB565, row-major */
+static u16 g_dsImage[192 * 256];          /* RGB565, row-major: what is shown */
+static u16 g_dsBack[192 * 256];           /* tiles are decoded here first */
 static volatile u32 g_videoFrames = 0;    /* bumps on every received packet */
 static volatile u64 g_lastVideoTime = 0;
 static volatile bool g_zoom = true;   /* enlarged is the default */
@@ -364,7 +365,7 @@ static void noteVideoSeq(u32 seq)
 
 static void decodeTile(int type, const u8* p, int tx, int ty)
 {
-    u16* dst = &g_dsImage[ty * 256 + tx];
+    u16* dst = &g_dsBack[ty * 256 + tx];
     switch (type)
     {
     case LINK_TILE_RAW:
@@ -394,6 +395,13 @@ static void decodeTile(int type, const u8* p, int tx, int ty)
         }
         break;
     }
+    case LINK_TILE_HALF:
+    {
+        u16 px[16]; memcpy(px, p, 32);
+        for (int y = 0; y < 8; y++)
+            for (int x = 0; x < 8; x++) dst[y * 256 + x] = px[(y >> 1) * 4 + (x >> 1)];
+        break;
+    }
     case LINK_TILE_PAL16:
     {
         u16 pal[16]; memcpy(pal, p, 32);
@@ -416,19 +424,45 @@ static int tilePayloadSize(int type)
     case LINK_TILE_PAL2: return 12;
     case LINK_TILE_PAL4: return 24;
     case LINK_TILE_PAL16: return 64;
+    case LINK_TILE_HALF: return 32;
     default: return -1;
     }
+}
+
+/* show the decoded image; called when a frame is complete */
+#ifdef LINK_HOST_TEST
+void link_test_on_present(const u16* img);   /* only for the PC simulation */
+#endif
+
+static void presentFrame(void)
+{
+    memcpy(g_dsImage, g_dsBack, sizeof(g_dsImage));
+    g_videoFrames++;
+#ifdef LINK_HOST_TEST
+    link_test_on_present(g_dsImage);
+#endif
 }
 
 static void videoThread(void* arg)
 {
     (void)arg;
     static u8 buf[2048];
+    u32 curFrame = 0;
+    bool frameOpen = false;     /* packets of curFrame decoded but not shown */
+    int gotPackets = 0, totalPackets = -1;
+    u64 frameStart = 0;
+
     while (g_running)
     {
         ssize_t n = recvfrom(g_videoFd, buf, sizeof(buf), 0, NULL, NULL);
         if (n <= 0)
         {
+            /* the last packet of a frame got lost and nothing new came: show it anyway */
+            if (frameOpen && osGetTime() - frameStart > 50)
+            {
+                presentFrame();
+                frameOpen = false;
+            }
             svcSleepThread(500000); /* 0.5 ms */
             continue;
         }
@@ -436,6 +470,17 @@ static void videoThread(void* arg)
         LinkFramePacket fp;
         memcpy(&fp, buf, sizeof(fp));
         if (fp.magic != LINK_FRAME_MAGIC) continue;
+
+        if (fp.frameId != curFrame)
+        {
+            /* a newer frame starts: show what we have (lost parts get resent) */
+            if (frameOpen) presentFrame();
+            curFrame = fp.frameId;
+            gotPackets = 0;
+            totalPackets = -1;
+            frameStart = osGetTime();
+        }
+        frameOpen = true;
 
         const u8* p = buf + sizeof(fp);
         const u8* end = buf + n;
@@ -453,8 +498,16 @@ static void videoThread(void* arg)
             p += size;
         }
         noteVideoSeq(fp.seq);
-        g_videoFrames++;
         g_lastVideoTime = osGetTime();
+
+        gotPackets++;
+        if (fp.flags & LINK_FRAME_LAST)
+            totalPackets = (fp.flags >> LINK_FRAME_INDEX_SHIFT) + 1;
+        if (totalPackets > 0 && gotPackets >= totalPackets)
+        {
+            presentFrame();
+            frameOpen = false;
+        }
     }
 }
 
@@ -721,6 +774,11 @@ int main(int argc, char** argv)
 
     /* TCP listen socket */
     g_listenFd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    {
+        /* allow restarting the app right away (port may still be in TIME_WAIT) */
+        int one = 1;
+        setsockopt(g_listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    }
     addr.sin_port = htons(LINK_TCP_PORT);
     bind(g_listenFd, (struct sockaddr*)&addr, sizeof(addr));
     listen(g_listenFd, 1);

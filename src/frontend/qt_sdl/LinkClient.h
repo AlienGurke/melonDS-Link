@@ -116,6 +116,9 @@ private:
     uint32_t refreshCursor = 0;
     uint32_t scanStart = 0;
     // latest receipt from the 3DS (guarded by videoMutex)
+    // adaptive data rate (AIMD on the packet loss reported by the 3DS)
+    double budgetBytes = 24 * 1024;
+    uint32_t statReceived = 0, statLost = 0;
     bool ackNew = false;
     bool ackValid = false;
     uint32_t ackSeq = 0;

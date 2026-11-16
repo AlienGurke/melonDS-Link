@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        3u
+#define LINK_VERSION        4u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -170,7 +170,13 @@ typedef struct LINK_PACKED LinkInputPacket
      PAL4   : 4 u16 colours + 16 bytes, 2 bits/pixel, row y = u16 y (LE),
               pixel x = bits 2x..2x+1                          (24 bytes)
      PAL16  : 16 u16 colours + 32 bytes, 4 bits/pixel, row y = u32 y (LE),
-              pixel x = bits 4x..4x+3                          (64 bytes) */
+              pixel x = bits 4x..4x+3                          (64 bytes)
+     HALF   : 16 u16 pixels (4x4, row-major), each covering 2x2 pixels.
+              Lossy quick preview; the exact tile follows later (32 bytes)
+
+   Frames: all packets of one update share frameId. `flags` holds the packet
+   index within the frame (bits 1-15) and LINK_FRAME_LAST on the final packet,
+   so the 3DS can show an update only once it is complete. */
 #define LINK_TILE_INDEX_MASK 0x03FFu
 #define LINK_TILE_TYPE_SHIFT 13
 #define LINK_TILE_RAW       0u
@@ -178,6 +184,10 @@ typedef struct LINK_PACKED LinkInputPacket
 #define LINK_TILE_PAL2      2u
 #define LINK_TILE_PAL4      3u
 #define LINK_TILE_PAL16     4u
+#define LINK_TILE_HALF      5u
+
+#define LINK_FRAME_LAST     1u
+#define LINK_FRAME_INDEX_SHIFT 1
 #define LINK_FRAME_MAGIC    0x52464D4Du /* "MDFR" */
 #define LINK_TILES_X        32
 #define LINK_TILES_Y        24

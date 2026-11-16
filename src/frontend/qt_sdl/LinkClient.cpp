@@ -4,6 +4,7 @@
 
 #include "LinkClient.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 
@@ -490,10 +491,9 @@ void Client::videoWorker()
         }
         else if (!lastFrame.empty())
         {
-            // nothing new (e.g. emulation paused): still repair lost tiles
-            bool anyForced = false;
-            for (uint8_t f : forceTile) if (f) { anyForced = true; break; }
-            if (anyForced) sendTiles(lastFrame);
+            // nothing new (e.g. emulation paused): still repair lost tiles and
+            // replace half-resolution previews with the exact picture
+            sendTiles(lastFrame);
         }
     }
 }
@@ -532,7 +532,11 @@ void Client::processAcks()
         if (!received && now - p.sentMs > 150) lost = true;
         if (!received && !lost) break;
         if (lost)
+        {
             for (uint16_t t : p.tiles) forceTile[t] = 1;
+            statLost++;
+        }
+        else statReceived++;
         inFlight.pop_front();
     }
 
@@ -624,12 +628,8 @@ unsigned encodeTile(const uint16_t* src, uint8_t* out, size_t& size)
 
 void Client::sendTiles(const std::vector<uint16_t>& frame)
 {
-    // Per frame at most ~24 KB (after compression). Packets are paced to
-    // ~3 MB/s so the 3DS WiFi is not flooded with bursts. Lost packets are
-    // reported back by the 3DS and resent (see processAcks).
-    constexpr size_t kBudget = 24 * 1024;
-    constexpr int kRefreshPerFrame = 4;      // safety net only
-    constexpr double kBytesPerSec = 3.0e6;
+    constexpr int kRefreshPerFrame = 4;          // safety net only
+    constexpr double kMinBudget = 12 * 1024, kMaxBudget = 64 * 1024;
 
     if (frame.size() != 256 * 192) return;
     if (videoResync.exchange(false) || sentFrame.size() != frame.size())
@@ -643,8 +643,23 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         }
         if (videoSeq == 0)                     // start where a previous session cannot be ahead
             videoSeq = (uint32_t)(nowMs() * 4);
+        budgetBytes = 24 * 1024;
+        statReceived = statLost = 0;
     }
     if (forceTile.size() != LINK_TILE_COUNT) forceTile.assign(LINK_TILE_COUNT, 1);
+
+    // adapt the data rate: more while the WiFi keeps up, less when packets get lost
+    if (statReceived + statLost >= 30)
+    {
+        double loss = (double)statLost / (statReceived + statLost);
+        if (loss > 0.05) budgetBytes *= 0.75;
+        else if (loss < 0.02) budgetBytes += 2048;
+        budgetBytes = std::min(kMaxBudget, std::max(kMinBudget, budgetBytes));
+        statReceived = statLost = 0;
+    }
+    const size_t budget = (size_t)budgetBytes;
+    // spread one frame's packets over roughly half a frame
+    const double bytesPerSec = std::min(6.0e6, std::max(2.0e6, budgetBytes * 120.0));
 
     auto tileBase = [](int t) { return (t / LINK_TILES_X) * 8 * 256 + (t % LINK_TILES_X) * 8; };
     auto tileChanged = [&](int t)
@@ -655,93 +670,174 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         return false;
     };
 
-    // order: lost/forced tiles, a few refresh tiles, then changed tiles
+    // which tiles: lost/forced ones, a few refresh tiles, then changed tiles
     std::vector<int> order;
     order.reserve(LINK_TILE_COUNT);
     std::vector<uint8_t> picked(LINK_TILE_COUNT, 0);
     for (int t = 0; t < LINK_TILE_COUNT; t++)
         if (forceTile[t]) { picked[t] = 1; order.push_back(t); }
-    size_t mandatory = 0;   // forced tiles are not limited by the budget
-    mandatory = order.size();
     for (int i = 0; i < kRefreshPerFrame; i++)
     {
         int t = (int)((refreshCursor + i) % LINK_TILE_COUNT);
         if (!picked[t]) { picked[t] = 1; order.push_back(t); }
     }
     refreshCursor = (refreshCursor + kRefreshPerFrame) % LINK_TILE_COUNT;
-    size_t firstChanged = order.size();
     for (int i = 0; i < LINK_TILE_COUNT; i++)
     {
         int t = (int)((scanStart + i) % LINK_TILE_COUNT);
         if (!picked[t] && tileChanged(t)) order.push_back(t);
     }
+    if (order.empty()) return;
+
+    // encode everything exactly first
+    struct Enc { int t; unsigned type; size_t size; uint8_t data[128]; };
+    std::vector<Enc> enc(order.size());
+    size_t total = 0;
+    for (size_t k = 0; k < order.size(); k++)
+    {
+        enc[k].t = order[k];
+        enc[k].type = encodeTile(&frame[tileBase(order[k])], enc[k].data, enc[k].size);
+        total += 2 + enc[k].size;
+    }
+
+    // too much for one update (e.g. a full-screen fade)? Send the biggest
+    // tiles as a half-resolution preview so the whole picture still changes
+    // at once; the exact tiles follow on the next, calmer frames.
+    if (total > budget)
+    {
+        std::vector<size_t> big;
+        for (size_t k = 0; k < enc.size(); k++)
+            if (enc[k].size > 34) big.push_back(k);
+        std::sort(big.begin(), big.end(), [&](size_t a, size_t b) { return enc[a].size > enc[b].size; });
+        for (size_t k : big)
+        {
+            if (total <= budget) break;
+            Enc& e = enc[k];
+            int base = tileBase(e.t);
+            const uint16_t* src = &frame[base];
+            uint16_t px[16];
+            for (int by = 0; by < 4; by++)
+                for (int bx = 0; bx < 4; bx++)
+                {
+                    unsigned r = 0, g = 0, b = 0;
+                    for (int dy = 0; dy < 2; dy++)
+                        for (int dx = 0; dx < 2; dx++)
+                        {
+                            uint16_t c = src[(by * 2 + dy) * 256 + bx * 2 + dx];
+                            r += c >> 11; g += (c >> 5) & 0x3F; b += c & 0x1F;
+                        }
+                    px[by * 4 + bx] = (uint16_t)(((r / 4) << 11) | ((g / 4) << 5) | (b / 4));
+                }
+            // the 3DS already shows exactly this preview: send it sharp now
+            // (if it does not fit, it follows on the next frames)
+            bool alreadyShown = true;
+            for (int y = 0; y < 8 && alreadyShown; y++)
+                for (int x = 0; x < 8; x++)
+                    if ((sentFrame[base + y * 256 + x] & ~1) != (px[(y >> 1) * 4 + (x >> 1)] & ~1))
+                    { alreadyShown = false; break; }
+            if (alreadyShown) continue;
+            total -= e.size;
+            e.type = LINK_TILE_HALF;
+            e.size = 32;
+            memcpy(e.data, px, 32);
+            total += e.size;
+        }
+    }
+
+    // pack into packets (whatever still does not fit waits for the next frame)
+    std::vector<std::vector<uint8_t>> packets;
+    std::vector<std::vector<uint16_t>> packetTiles;
+    std::vector<uint8_t> cur;
+    std::vector<uint16_t> curTiles;
+    uint16_t curEntries = 0;
+    size_t packed = 0;
+    int lastChanged = -1;
+    auto finish = [&]()
+    {
+        if (!curEntries) return;
+        LinkFramePacket hdr = {};
+        hdr.magic = LINK_FRAME_MAGIC;
+        hdr.entryCount = curEntries;
+        memcpy(cur.data(), &hdr, sizeof(hdr));
+        packets.push_back(std::move(cur));
+        packetTiles.push_back(std::move(curTiles));
+        cur.clear();
+        curTiles.clear();
+        curEntries = 0;
+    };
+    for (size_t k = 0; k < enc.size(); k++)
+    {
+        Enc& e = enc[k];
+        size_t need = 2 + e.size;
+        bool mandatory = forceTile[e.t] != 0;
+        if (!mandatory && packed + need > budget) continue;   // stays different -> next frame
+        if (cur.empty()) cur.resize(sizeof(LinkFramePacket));
+        if (cur.size() + need > LINK_FRAME_MAX_BYTES)
+        {
+            finish();
+            cur.resize(sizeof(LinkFramePacket));
+        }
+        uint16_t head = (uint16_t)(e.t | (e.type << LINK_TILE_TYPE_SHIFT));
+        size_t off = cur.size();
+        cur.resize(off + need);
+        memcpy(&cur[off], &head, 2);
+        memcpy(&cur[off + 2], e.data, e.size);
+        curEntries++;
+        curTiles.push_back((uint16_t)e.t);
+        packed += need;
+
+        // remember what the 3DS will show for this tile
+        int base = tileBase(e.t);
+        if (e.type == LINK_TILE_HALF)
+        {
+            const uint16_t* px = (const uint16_t*)e.data;
+            for (int y = 0; y < 8; y++)
+                for (int x = 0; x < 8; x++)
+                    sentFrame[base + y * 256 + x] = px[(y >> 1) * 4 + (x >> 1)];
+            // make sure the exact version follows even if this happens to match
+            if (memcmp(px, &frame[base], 2) == 0) sentFrame[base] ^= 1;
+        }
+        else
+        {
+            for (int y = 0; y < 8; y++)
+                memcpy(&sentFrame[base + y * 256], &frame[base + y * 256], 16);
+        }
+        forceTile[e.t] = 0;
+        lastChanged = e.t;
+    }
+    finish();
+    if (packets.empty()) return;
+
+    // continue after the last tile sent next time, so no area starves
+    if (lastChanged >= 0) scanStart = (uint32_t)((lastChanged + 1) % LINK_TILE_COUNT);
 
     sockaddr_in to;
     memcpy(&to, videoAddr, sizeof(to));
-
-    uint8_t pkt[LINK_FRAME_MAX_BYTES];
-    LinkFramePacket hdr = {};
-    hdr.magic = LINK_FRAME_MAGIC;
-    hdr.frameId = ++videoFrameId;
-    size_t used = sizeof(hdr);
-    size_t total = 0;
-    uint16_t entries = 0;
-    std::vector<uint16_t> pktTiles;
-
+    uint32_t frameId = ++videoFrameId;
     auto t0 = std::chrono::steady_clock::now();
-    bool ok = true;
-    auto flush = [&]()
+    size_t sentBytes = 0;
+    for (size_t i = 0; i < packets.size(); i++)
     {
-        if (!entries || !ok) return;
-        hdr.entryCount = entries;
+        std::vector<uint8_t>& pk = packets[i];
+        LinkFramePacket hdr;
+        memcpy(&hdr, pk.data(), sizeof(hdr));
+        hdr.frameId = frameId;
         hdr.seq = videoSeq++;
-        memcpy(pkt, &hdr, sizeof(hdr));
+        hdr.flags = (uint16_t)((i << LINK_FRAME_INDEX_SHIFT) | (i + 1 == packets.size() ? LINK_FRAME_LAST : 0));
+        memcpy(pk.data(), &hdr, sizeof(hdr));
         {
             std::lock_guard<std::mutex> lock(reqMutex);   // keeps udpSock alive
-            if (udpSock == -1) { ok = false; return; }
-            sendto((sock_t)udpSock, (const char*)pkt, (int)used, 0, (sockaddr*)&to, sizeof(to));
+            if (udpSock == -1) return;
+            sendto((sock_t)udpSock, (const char*)pk.data(), (int)pk.size(), 0, (sockaddr*)&to, sizeof(to));
         }
-        inFlight.push_back({hdr.seq, nowMs(), pktTiles});
-        total += used;
-        used = sizeof(hdr);
-        entries = 0;
-        pktTiles.clear();
+        inFlight.push_back({hdr.seq, nowMs(), std::move(packetTiles[i])});
+        sentBytes += pk.size();
 
-        // pacing: wait until the average rate is back under kBytesPerSec
-        auto due = t0 + std::chrono::microseconds((long long)(total * 1e6 / kBytesPerSec));
+        // pacing, so the 3DS WiFi does not get the whole frame as one burst
+        auto due = t0 + std::chrono::microseconds((long long)(sentBytes * 1e6 / bytesPerSec));
         while (std::chrono::steady_clock::now() < due && !stopRequested)
             std::this_thread::yield();
-    };
-
-    uint8_t tilebuf[128];
-    int lastScanned = -1;
-    for (size_t k = 0; k < order.size() && ok; k++)
-    {
-        int t = order[k];
-        int base = tileBase(t);
-        size_t size = 0;
-        unsigned type = encodeTile(&frame[base], tilebuf, size);
-
-        size_t need = 2 + size;
-        if (k >= mandatory && total + used + need > kBudget) break;
-        if (used + need > LINK_FRAME_MAX_BYTES) flush();
-
-        uint16_t head = (uint16_t)(t | (type << LINK_TILE_TYPE_SHIFT));
-        memcpy(pkt + used, &head, 2);
-        memcpy(pkt + used + 2, tilebuf, size);
-        used += need;
-        entries++;
-        pktTiles.push_back((uint16_t)t);
-
-        for (int y = 0; y < 8; y++)
-            memcpy(&sentFrame[base + y * 256], &frame[base + y * 256], 16);
-        forceTile[t] = 0;
-        if (k >= firstChanged) lastScanned = t;
     }
-    flush();
-
-    // continue after the last changed tile next time, so no area starves
-    if (lastScanned >= 0) scanStart = (uint32_t)((lastScanned + 1) % LINK_TILE_COUNT);
 }
 
 Client& Get()
