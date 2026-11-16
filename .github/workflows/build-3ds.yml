@@ -25,14 +25,30 @@ jobs:
       uses: actions/checkout@v6
     - name: Build
       run: make -C link3ds
+    - uses: actions/upload-artifact@v7
+      with:
+        name: link3ds-build
+        path: |
+          link3ds/melonDS-Link.3dsx
+          link3ds/melonDS-Link.elf
+
+  # makerom needs a newer glibc than the devkitPro container has
+  cia:
+    name: cia
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out sources
+      uses: actions/checkout@v6
+    - uses: actions/download-artifact@v7
+      with:
+        name: link3ds-build
+        path: link3ds
     - name: Build .cia (install with FBI for a Home Menu icon)
-      continue-on-error: true
-      run: |
-        apt-get update -qq && apt-get install -y -qq unzip curl git g++ make >/dev/null
-        sh link3ds/cia/build-cia.sh link3ds/melonDS-Link.elf link3ds/melonDS-Link.cia
+      run: sh link3ds/cia/build-cia.sh link3ds/melonDS-Link.elf link3ds/melonDS-Link.cia
     - uses: actions/upload-artifact@v7
       with:
         name: melonDS-Link-3ds
         path: |
-          link3ds/melonDS-Link.3dsx
           link3ds/melonDS-Link.cia
+          link3ds/melonDS-Link.3dsx
