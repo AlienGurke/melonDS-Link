@@ -21,7 +21,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <poll.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -50,6 +49,11 @@ static void setStatusText(const char* s)
 /* ------------------------------------------------------------------ */
 /* socket helpers                                                      */
 
+/* IMPORTANT: all threads share ONE session with the 3DS socket service, and it
+   handles requests one after another. A blocking call (poll/recv/send with a
+   timeout) therefore stalls every other thread's socket calls - the video
+   receiver and the input sender included. So we never block inside the socket
+   service: we try, and if it would block, we sleep in our own thread. */
 static bool sendAll(int fd, const void* buf, size_t len)
 {
     const uint8_t* p = (const uint8_t*)buf;
@@ -62,10 +66,8 @@ static bool sendAll(int fd, const void* buf, size_t len)
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                /* wait until there is room again - no fixed sleep, that capped the speed */
-                struct pollfd pf = { .fd = fd, .events = POLLOUT, .revents = 0 };
                 if (!g_running) return false;
-                poll(&pf, 1, 100);
+                svcSleepThread(500000);   /* 0.5 ms, outside the socket service */
                 continue;
             }
             return false;
@@ -86,12 +88,7 @@ static bool recvAll(int fd, void* buf, size_t len)
         ssize_t n = recv(fd, p, len, 0);
         if (n < 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                struct pollfd pf = { .fd = fd, .events = POLLIN, .revents = 0 };
-                poll(&pf, 1, 100);
-                continue;
-            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) { svcSleepThread(1000000); continue; }
             return false;
         }
         if (n == 0) return false;
@@ -732,7 +729,7 @@ static void serverThread(void* arg)
             continue;
         }
 
-        /* non-blocking, so quitting never hangs in recv(); recvAll/sendAll poll */
+        /* non-blocking: never block inside the shared socket service (see sendAll) */
         int flags = fcntl(fd, F_GETFL, 0);
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         {
@@ -937,10 +934,9 @@ static void videoThread(void* arg)
                 frameOpen = false;
                 lastPresent = osGetTime();
             }
-            /* sleep until a packet arrives instead of asking the socket service
-               thousands of times a second (that slowed down everything else) */
-            struct pollfd pf = { .fd = g_videoFd, .events = POLLIN, .revents = 0 };
-            poll(&pf, 1, 50);
+            /* nothing there: sleep in our own thread (never block inside the
+               shared socket service, see sendAll) */
+            svcSleepThread(1000000);   /* 1 ms */
             continue;
         }
         if ((size_t)n < sizeof(LinkFramePacket)) continue;
@@ -1355,7 +1351,7 @@ int main(int argc, char** argv)
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     /* lower number = higher priority. The network threads mostly sleep in
-       poll/recv, so they can safely go before the UI (main thread). */
+       their own short sleeps, so they can safely go before the UI (main thread). */
     Thread inp = threadCreate(inputThread, NULL, 0x4000, prio - 2, -2, false);
     Thread vid = threadCreate(videoThread, NULL, 0x4000, prio - 1, -2, false);
     Thread srv = threadCreate(serverThread, NULL, 0x4000, prio - 1, -2, false);
