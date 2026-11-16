@@ -724,6 +724,9 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             f = fopen(path, "w+b");
         }
         if (!f) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
+        /* no stdio buffer: otherwise the data goes to the SD card in ~1 KB
+           pieces, each committed on its own (512 KB took ~10 s) */
+        setvbuf(f, NULL, _IONBF, 0);
         bool ok = fseeko(f, (off_t)req.offset, SEEK_SET) == 0 &&
                   fwrite(data, 1, dataLen, f) == dataLen;
         ok = (fflush(f) == 0) && ok;

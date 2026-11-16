@@ -234,7 +234,8 @@ bool Client::requestLocked(uint16_t cmd, const void* payload, uint32_t len,
 
     {
         LinkHeader r = {};
-        if (!recvAll(s, &r, sizeof(r))) goto fail;
+        // the 3DS may need a while for SD card work: wait up to 30 s
+        if (!recvAll(s, &r, sizeof(r), 30000)) goto fail;
         if (r.magic != LINK_MAGIC || r.seq != h.seq || r.cmd != (cmd | LINK_RESP) ||
             r.len > LINK_MAX_PAYLOAD)
             goto fail;
