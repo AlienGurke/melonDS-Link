@@ -587,7 +587,7 @@ void Client::worker(std::string host)
                 std::lock_guard<std::mutex> l(tuneMutex);
                 t = defaultTuning;
             }
-            if (t.sndbuf || t.piece || t.sleepUs) SetTuning(t);
+            if (t.sndbuf || t.piece || t.sleepUs || t.flags) SetTuning(t);
         }
 
         int64_t lastHello = 0, lastPing = nowMs();

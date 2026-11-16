@@ -655,10 +655,12 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 emuInstance->osdAddMessage(0, "3DS Link: WLAN-Test laeuft...");
                 std::thread([this]
                 {
-                    struct Cfg { uint32_t buf, piece, sleep; };
+                    struct Cfg { uint32_t buf, piece, sleep; bool block; };
+                    // non-blocking (current method) vs. blocking sends like ftpd
                     std::vector<Cfg> cfgs = {
-                        {32768, 65536, 500}, {65536, 65536, 500}, {131072, 65536, 500}, {262144, 65536, 500},
-                        {32768, 16384, 500}, {131072, 16384, 500}, {131072, 131072, 500}, {262144, 262144, 500},
+                        {32768, 65536, 500, false}, {262144, 65536, 500, false},
+                        {32768, 65536, 500, true}, {65536, 65536, 500, true}, {131072, 65536, 500, true},
+                        {262144, 65536, 500, true}, {262144, 262144, 500, true}, {32768, 16384, 500, true},
                     };
                     QString table;
                     Link::Session::Log("WLAN-Test gestartet");
@@ -671,11 +673,12 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         t.sndbuf = c.buf;
                         t.piece = c.piece;
                         t.sleepUs = c.sleep;
+                        t.flags = LINK_TUNE_SET | (c.block ? LINK_TUNE_BLOCKING : 0);
                         double rate = 0;
                         bool ok = Link::Get().SpeedTest(t, rate);
                         char line[160];
-                        snprintf(line, sizeof(line), "Puffer %3uK  Stueck %3uK  Pause %4uus:  %s",
-                                 c.buf / 1024, c.piece / 1024, c.sleep,
+                        snprintf(line, sizeof(line), "%-12s Puffer %3uK  Stueck %3uK:  %s",
+                                 c.block ? "blockierend" : "abfragend", c.buf / 1024, c.piece / 1024,
                                  ok ? (std::to_string((int)(rate / 1024)) + " KB/s").c_str() : "Fehler");
                         table += QString(line) + "\n";
                         Link::Session::Log(std::string("  ") + line);
@@ -688,10 +691,6 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         if (Link::Get().GetState() != Link::State::Connected) break;
                         runOne(c);
                     }
-                    // fine-tune the pause with the best buffer/piece
-                    for (uint32_t sl : {100u, 2000u})
-                        if (Link::Get().GetState() == Link::State::Connected)
-                            runOne({best.buf, best.piece, sl});
 
                     QString text;
                     if (bestRate > 0)
@@ -700,11 +699,12 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         t.sndbuf = best.buf;
                         t.piece = best.piece;
                         t.sleepUs = best.sleep;
+                        t.flags = LINK_TUNE_SET | (best.block ? LINK_TUNE_BLOCKING : 0);
                         Link::Get().SetTuning(t);
                         Link::Get().SetDefaultTuning(t);
                         char sum[200];
-                        snprintf(sum, sizeof(sum), "Beste Einstellung: Puffer %uK, Stueck %uK, Pause %uus -> %d KB/s (wird ab jetzt verwendet)",
-                                 best.buf / 1024, best.piece / 1024, best.sleep, (int)(bestRate / 1024));
+                        snprintf(sum, sizeof(sum), "Beste Einstellung: %s, Puffer %uK, Stueck %uK -> %d KB/s (wird ab jetzt verwendet)",
+                                 best.block ? "blockierend" : "abfragend", best.buf / 1024, best.piece / 1024, (int)(bestRate / 1024));
                         Link::Session::Log(sum);
                         text = "Ergebnisse (3DS -> PC, reine WLAN-Geschwindigkeit):\n\n" + table + "\n" + QString(sum) +
                                "\n\nZum Vergleich: ftpd/WinSCP ca. 1600 KB/s.\nAlles steht auch in melonDS-Link\\link-log.txt.";
@@ -713,6 +713,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                             globalCfg.SetInt("Link.SendBuf", (int)best.buf);
                             globalCfg.SetInt("Link.SendPiece", (int)best.piece);
                             globalCfg.SetInt("Link.SendPauseUs", (int)best.sleep);
+                            globalCfg.SetInt("Link.SendBlocking", best.block ? 1 : 0);
                             Config::Save();
                         }, Qt::QueuedConnection);
                     }
@@ -748,6 +749,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     t.sndbuf = (uint32_t)std::max(0, globalCfg.GetInt("Link.SendBuf"));
                     t.piece = (uint32_t)std::max(0, globalCfg.GetInt("Link.SendPiece"));
                     t.sleepUs = (uint32_t)std::max(0, globalCfg.GetInt("Link.SendPauseUs"));
+                    if (t.sndbuf) t.flags = LINK_TUNE_SET | (globalCfg.GetInt("Link.SendBlocking") ? LINK_TUNE_BLOCKING : 0);
                     Link::Get().SetDefaultTuning(t);
                 }
                 linkTimer = new QTimer(this);

@@ -67,7 +67,11 @@ typedef struct LinkTuning
     uint32_t sndbuf;      /* SO_SNDBUF of the data connection */
     uint32_t piece;       /* bytes per send() call */
     uint32_t sleepUs;     /* pause when the send buffer is full */
+    uint32_t flags;       /* LINK_TUNE_* (absent in older senders = 0) */
 } LinkTuning;
+
+#define LINK_TUNE_SET       1u   /* `flags` is meant (so 0 can switch options off) */
+#define LINK_TUNE_BLOCKING  2u   /* blocking sends during big transfers (like ftpd) */
 
 /* Events the 3DS has for melonDS (fetched with LINK_CMD_POLLEVENT) */
 enum LinkEventType

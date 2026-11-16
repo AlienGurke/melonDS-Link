@@ -67,6 +67,16 @@ static volatile u64 g_statPackTicks, g_statPackBytes;   /* LZ4 */
 static volatile u32 g_sendPiece = 0x10000;     /* bytes per send() call */
 static volatile u32 g_sendSleepUs = 500;       /* pause when the send buffer is full */
 static volatile u32 g_sendBuf = 32768;         /* SO_SNDBUF of the data connection */
+static volatile bool g_sendBlocking = false;   /* blocking sends during big transfers */
+
+/* During a big transfer nobody else uses the socket service (g_bulkActive),
+   so the sender may wait inside it like ftpd does: the system wakes it as soon
+   as there is room, instead of us sleeping and asking again. */
+static void setBlocking(int fd, bool on)
+{
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, on ? (fl & ~O_NONBLOCK) : (fl | O_NONBLOCK));
+}
 
 static bool sendAll(int fd, const void* buf, size_t len)
 {
@@ -460,6 +470,8 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     u64 len64 = length;
     if (!sendResponse(fd, h, LINK_OK, &len64, sizeof(len64))) { fclose(f); return false; }
     g_bulkActive = true;
+    bool blocking = g_sendBlocking;
+    if (blocking) setBlocking(fd, true);
 
     /* on a New 3DS the reading/compressing runs on its own CPU core */
     s32 prio = 0x30;
@@ -532,6 +544,7 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
         }
     }
     g_streamStop = true;
+    if (blocking) setBlocking(fd, false);
     g_bulkActive = false;
     threadJoin(rd, U64_MAX);
     threadFree(rd);
@@ -731,16 +744,19 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         if (t.piece) g_sendPiece = t.piece > 0x40000 ? 0x40000 : t.piece;
         if (t.sleepUs) g_sendSleepUs = t.sleepUs;
         if (t.sndbuf) { int b = (int)t.sndbuf; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &b, sizeof(b)); }
+        bool blocking = (t.flags & LINK_TUNE_SET) ? (t.flags & LINK_TUNE_BLOCKING) != 0 : g_sendBlocking;
 
         u64 total = (u64)mb * 1024 * 1024;
         bool okSend = sendResponse(fd, h, LINK_OK, &total, sizeof(total));
         g_statSendSleeps = 0;
         g_bulkActive = true;
+        if (blocking) setBlocking(fd, true);
         u64 t0 = osGetTime();
         for (u64 sent = 0; sent < total && okSend; sent += 0x40000)
             okSend = sendAll(fd, junk, 0x40000);
-        g_bulkActive = false;
         u64 ms = osGetTime() - t0;
+        if (blocking) setBlocking(fd, false);
+        g_bulkActive = false;
 
         g_sendPiece = oldPiece;
         g_sendSleepUs = oldSleep;
@@ -748,9 +764,9 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         if (!okSend) return false;
 
         LightLock_Lock(&g_lock);
-        snprintf(g_xferInfo, sizeof(g_xferInfo), "Speedtest: %lu KB/s (Puffer %luK, Stueck %luK)",
+        snprintf(g_xferInfo, sizeof(g_xferInfo), "Speedtest: %lu KB/s (%luK/%luK%s)",
                  ms ? (unsigned long)(total / ms) : 0, (unsigned long)((t.sndbuf ? t.sndbuf : oldBuf) / 1024),
-                 (unsigned long)((t.piece ? t.piece : oldPiece) / 1024));
+                 (unsigned long)((t.piece ? t.piece : oldPiece) / 1024), blocking ? ", blockierend" : "");
         snprintf(g_xferInfo2, sizeof(g_xferInfo2), "Wartet: WLAN-Puffer voll %lu%%",
                  ms ? (unsigned long)(g_statSendSleeps * g_sendSleepUs / 10 / ms) : 0);
         LightLock_Unlock(&g_lock);
@@ -761,9 +777,10 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
     {
         char txt[256];
         LightLock_Lock(&g_lock);
-        snprintf(txt, sizeof(txt), "%s | %s | Puffer %luK, Stueck %luK, Pause %luus",
+        snprintf(txt, sizeof(txt), "%s | %s | Puffer %luK, Stueck %luK, Pause %luus%s",
                  g_xferInfo, g_xferInfo2, (unsigned long)(g_sendBuf / 1024),
-                 (unsigned long)(g_sendPiece / 1024), (unsigned long)g_sendSleepUs);
+                 (unsigned long)(g_sendPiece / 1024), (unsigned long)g_sendSleepUs,
+                 g_sendBlocking ? ", blockierend" : "");
         LightLock_Unlock(&g_lock);
         return sendResponse(fd, h, LINK_OK, txt, (uint32_t)strlen(txt));
     }
@@ -775,6 +792,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         memcpy(&t, payload, h->len < sizeof(t) ? h->len : sizeof(t));
         if (t.piece) g_sendPiece = t.piece > 0x40000 ? 0x40000 : t.piece;
         if (t.sleepUs) g_sendSleepUs = t.sleepUs;
+        if (t.flags & LINK_TUNE_SET) g_sendBlocking = (t.flags & LINK_TUNE_BLOCKING) != 0;
         if (t.sndbuf)
         {
             g_sendBuf = t.sndbuf;
@@ -1604,7 +1622,9 @@ int main(int argc, char** argv)
     close(g_listenFd);
     threadJoin(inp, U64_MAX);
     threadJoin(vid, U64_MAX);
-    threadJoin(srv, U64_MAX);
+    /* a blocking send could still be waiting for the PC: give it 2 s, then
+       socExit() below tears the sockets down anyway */
+    threadJoin(srv, 2000000000LL);
     threadFree(inp);
     threadFree(vid);
     threadFree(srv);
