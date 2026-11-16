@@ -2385,13 +2385,16 @@ void MainWindow::toggleFullscreen()
 {
     if (!isFullScreen())
     {
+        maximizedBeforeFullscreen = isMaximized();
         showFullScreen();
         if (hasMenu)
             menuBar()->setFixedHeight(0); // Don't use hide() as menubar actions stop working
     }
     else
     {
-        showNormal();
+        // back to how the window was before (maximized or normal)
+        if (maximizedBeforeFullscreen) showMaximized();
+        else showNormal();
         if (hasMenu)
         {
             int menuBarHeight = menuBar()->sizeHint().height();
