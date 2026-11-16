@@ -26,11 +26,22 @@ if ! command -v makerom >/dev/null 2>&1; then
 fi
 
 if ! command -v bannertool >/dev/null 2>&1; then
-    URL="$(fetch_latest Steveice10/bannertool 'bannertool.*\.zip$')"
-    echo "bannertool: $URL"
-    curl -fsSL -o "$TOOLS/bannertool.zip" "$URL"
-    unzip -o -q "$TOOLS/bannertool.zip" -d "$TOOLS/bannertool-x"
-    cp "$(find "$TOOLS/bannertool-x" -type f -name bannertool -path '*linux*x86_64*' | head -n1)" "$TOOLS/bannertool"
+    # the original repository is gone; diasurgical/bannertool is the maintained fork
+    URL="$(fetch_latest diasurgical/bannertool 'bannertool.*\.zip$' || true)"
+    if [ -n "$URL" ]; then
+        echo "bannertool: $URL"
+        curl -fsSL -o "$TOOLS/bannertool.zip" "$URL"
+        unzip -o -q "$TOOLS/bannertool.zip" -d "$TOOLS/bannertool-x"
+        BT="$(find "$TOOLS/bannertool-x" -type f -name bannertool -path '*linux*x86_64*' | head -n1)"
+        [ -n "$BT" ] && cp "$BT" "$TOOLS/bannertool"
+    fi
+    if [ ! -x "$TOOLS/bannertool" ] && [ ! -f "$TOOLS/bannertool" ]; then
+        echo "bannertool: building from source"
+        rm -rf "$TOOLS/bannertool-src"
+        git clone --depth 1 --recurse-submodules https://github.com/diasurgical/bannertool.git "$TOOLS/bannertool-src"
+        make -C "$TOOLS/bannertool-src" -j"$(nproc)"
+        cp "$(find "$TOOLS/bannertool-src/output" -type f -name bannertool | head -n1)" "$TOOLS/bannertool"
+    fi
     chmod +x "$TOOLS/bannertool"
 fi
 
