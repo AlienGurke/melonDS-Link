@@ -574,6 +574,23 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
             menu->addSeparator();
 
+            {
+                // melonDS Link: fullscreen without menu bar and taskbar (F11, Esc leaves it)
+                QAction* actFullscreen = menu->addAction("Fullscreen");
+                actFullscreen->setShortcut(QKeySequence(Qt::Key_F11));
+                actFullscreen->setShortcutContext(Qt::WindowShortcut);
+                addAction(actFullscreen);   // keeps working while the menu bar is hidden
+                connect(actFullscreen, &QAction::triggered, this, [this] { toggleFullscreen(); });
+
+                actLeaveFullscreen = new QAction(this);
+                actLeaveFullscreen->setEnabled(false);   // Esc stays free for key mappings otherwise
+                actLeaveFullscreen->setShortcut(QKeySequence(Qt::Key_Escape));
+                actLeaveFullscreen->setShortcutContext(Qt::WindowShortcut);
+                addAction(actLeaveFullscreen);
+                connect(actLeaveFullscreen, &QAction::triggered, this, [this] { if (isFullScreen()) toggleFullscreen(); });
+                menu->addSeparator();
+            }
+
             actScreenFiltering = menu->addAction("Screen filtering");
             actScreenFiltering->setCheckable(true);
             connect(actScreenFiltering, &QAction::triggered, this, &MainWindow::onChangeScreenFiltering);
@@ -1019,6 +1036,7 @@ void MainWindow::createScreenPanel()
 
     connect(this, SIGNAL(screenLayoutChange()), panel, SLOT(onScreenLayoutChanged()));
     emit screenLayoutChange();
+    applyMouseHide();
 }
 
 GL::Context* MainWindow::getOGLContext()
@@ -2206,8 +2224,7 @@ void MainWindow::onUpdateInterfaceSettings()
     emuInstance->targetFPS = globalCfg.GetDouble("TargetFPS");
     emuInstance->fastForwardFPS = globalCfg.GetDouble("FastForwardFPS");
     emuInstance->slowmoFPS = globalCfg.GetDouble("SlowmoFPS");
-    panel->setMouseHide(globalCfg.GetBool("Mouse.Hide"),
-                        globalCfg.GetInt("Mouse.HideSeconds")*1000);
+    applyMouseHide();
 }
 
 void MainWindow::onInterfaceSettingsFinished(int res)
@@ -2381,6 +2398,19 @@ void MainWindow::toggleFullscreen()
             menuBar()->setFixedHeight(menuBarHeight);
         }
     }
+    if (actLeaveFullscreen) actLeaveFullscreen->setEnabled(isFullScreen());
+    applyMouseHide();
+}
+
+void MainWindow::applyMouseHide()
+{
+    if (!panel) return;
+    // in fullscreen the pointer disappears after 1.5 s without moving
+    // (nothing static on the screen, e.g. for OLED monitors)
+    if (isFullScreen())
+        panel->setCursorAutoHide(true, 1500);
+    else
+        panel->setCursorAutoHide(globalCfg.GetBool("Mouse.Hide"), globalCfg.GetInt("Mouse.HideSeconds") * 1000);
 }
 
 void MainWindow::onFullscreenToggled()

@@ -61,6 +61,8 @@ public:
     void setFilter(bool filter);
 
     void setMouseHide(bool enable, int delay);
+    // melonDS Link: apply a hide setting and start counting from now
+    void setCursorAutoHide(bool enable, int delay) { setMouseHide(enable, delay); showCursor(); }
 
     QTimer* setupMouseTimer();
     void updateMouseTimer();

@@ -60,6 +60,8 @@ public:
     void saveEnabled(bool enabled);
 
     void toggleFullscreen();
+    void applyMouseHide();   // fullscreen: hide the mouse pointer quickly
+    QAction* actLeaveFullscreen = nullptr;   // Esc, only active in fullscreen
 
     bool hasOpenGL() { return hasOGL; }
     GL::Context* getOGLContext();
