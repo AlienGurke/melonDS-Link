@@ -485,7 +485,7 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     bool ok = true;
     u64 sent = 0, wire = 0;
     int i = 0;
-    u64 t0 = osGetTime(), lastInfo = t0;
+    u64 t0 = osGetTime();
     u64 waitTicks = 0, blocks = 0, waitTotal = 0, tick0 = svcGetSystemTick();
     while (sent < length && ok && g_running)
     {
@@ -514,15 +514,18 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
         i = (i + 1) % STREAM_BUFS;
         blocks++;
 
-        /* every 8 blocks: if we spent more than a third of the time waiting
-           for the reader, packing is slower than the WiFi -> stop using LZ4 */
+        /* every 8 blocks: switch LZ4 off only if packing itself is too slow,
+           i.e. LZ4 runs at less than 3x the WiFi rate. (Waiting for the reader
+           alone is no reason: in padding areas the SD card is the limit, and
+           LZ4 does not run there at all.) */
         if (compress && g_streamCompress && blocks % 8 == 0)
         {
             u64 now = osGetTime();
-            u64 elapsedTicks = (now - lastInfo) * (u64)SYSCLOCK_ARM11 / 1000;
-            if (elapsedTicks > 0 && waitTicks * 3 > elapsedTicks) g_streamCompress = false;
+            u64 ms = now - t0;
+            double wifiBps = ms ? wire * 1000.0 / ms : 0;
+            double lz4Bps = g_statPackTicks ? g_statPackBytes / (g_statPackTicks / (double)SYSCLOCK_ARM11) : 1e12;
+            if (wifiBps > 0 && g_statPackBytes > 4 * STREAM_CHUNK && lz4Bps < 3 * wifiBps) g_streamCompress = false;
             waitTicks = 0;
-            lastInfo = now;
         }
         u64 secs1000 = osGetTime() - t0;
         if (secs1000 > 0 && blocks % 4 == 0)
