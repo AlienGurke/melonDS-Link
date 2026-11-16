@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        2u
+#define LINK_VERSION        3u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -150,25 +150,45 @@ typedef struct LINK_PACKED LinkInputPacket
     int16_t  cstickX, cstickY;
     uint16_t dsTouchX, dsTouchY;   /* touch already mapped to DS space (256x192) */
     uint32_t flags;                /* LINK_INPUT_* */
+    /* video receipt: highest video packet seq received, and a bitmask of
+       which of the 64 seqs up to it arrived (bit n = videoAckSeq - n) */
+    uint32_t videoAckSeq;
+    uint32_t reserved2;
+    uint64_t videoAckMask;
 } LinkInputPacket;
 
 #define LINK_INPUT_DSTOUCH  1u     /* dsTouchX/Y valid: the DS screen is being touched */
 #define LINK_INPUT_ZOOM     2u     /* 3DS shows the DS screen enlarged */
+#define LINK_INPUT_VIDEOACK 4u     /* videoAckSeq/Mask valid */
 
 /* Video: the DS bottom screen is split into 32x24 tiles of 8x8 RGB565 pixels.
-   Each entry is a u16 tile index; with LINK_TILE_SOLID set, one u16 colour
-   follows, otherwise 64 u16 pixels (row-major). */
+   Each entry starts with a u16: bits 0-9 tile index, bits 13-15 tile type.
+     RAW    : 64 u16 pixels, row-major                         (128 bytes)
+     SOLID  : 1 u16 colour                                     (2 bytes)
+     PAL2   : 2 u16 colours + 8 bytes, 1 bit/pixel, row y = byte y,
+              pixel x = bit x                                  (12 bytes)
+     PAL4   : 4 u16 colours + 16 bytes, 2 bits/pixel, row y = u16 y (LE),
+              pixel x = bits 2x..2x+1                          (24 bytes)
+     PAL16  : 16 u16 colours + 32 bytes, 4 bits/pixel, row y = u32 y (LE),
+              pixel x = bits 4x..4x+3                          (64 bytes) */
+#define LINK_TILE_INDEX_MASK 0x03FFu
+#define LINK_TILE_TYPE_SHIFT 13
+#define LINK_TILE_RAW       0u
+#define LINK_TILE_SOLID_T   1u
+#define LINK_TILE_PAL2      2u
+#define LINK_TILE_PAL4      3u
+#define LINK_TILE_PAL16     4u
 #define LINK_FRAME_MAGIC    0x52464D4Du /* "MDFR" */
 #define LINK_TILES_X        32
 #define LINK_TILES_Y        24
 #define LINK_TILE_COUNT     (LINK_TILES_X * LINK_TILES_Y)
-#define LINK_TILE_SOLID     0x8000u
 #define LINK_FRAME_MAX_BYTES 1400
 
 typedef struct LINK_PACKED LinkFramePacket
 {
     uint32_t magic;
     uint32_t frameId;
+    uint32_t seq;          /* increments per packet, for receipts */
     uint16_t entryCount;
     uint16_t flags;
     /* followed by entries */
@@ -180,7 +200,8 @@ typedef struct LINK_PACKED LinkFramePacket
 
 #ifdef __cplusplus
 static_assert(sizeof(LinkHeader) == 16, "LinkHeader size");
-static_assert(sizeof(LinkInputPacket) == 32, "LinkInputPacket size");
+static_assert(sizeof(LinkInputPacket) == 48, "LinkInputPacket size");
+static_assert(sizeof(LinkFramePacket) == 16, "LinkFramePacket size");
 #endif
 
 #endif

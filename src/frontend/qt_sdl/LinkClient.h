@@ -107,9 +107,20 @@ private:
     std::atomic<bool> videoResync { true };  // resend everything (new connection)
     std::thread videoThread;
     std::vector<uint16_t> sentFrame;        // what was last sent per pixel
+    std::vector<uint16_t> lastFrame;        // for resending while nothing new comes in
+    std::vector<uint8_t> forceTile;         // tiles whose packet got lost -> resend
+    struct SentPacket { uint32_t seq; int64_t sentMs; std::vector<uint16_t> tiles; };
+    std::deque<SentPacket> inFlight;        // sent, not yet confirmed by the 3DS
     uint32_t videoFrameId = 0;
+    uint32_t videoSeq = 0;
     uint32_t refreshCursor = 0;
     uint32_t scanStart = 0;
+    // latest receipt from the 3DS (guarded by videoMutex)
+    bool ackNew = false;
+    bool ackValid = false;
+    uint32_t ackSeq = 0;
+    uint64_t ackMask = 0;
+    void processAcks();
     uint8_t videoAddr[16] = {};             // sockaddr_in of the 3DS video port
     std::atomic<bool> haveVideoAddr { false };
 

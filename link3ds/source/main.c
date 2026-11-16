@@ -328,8 +328,97 @@ static void serverThread(void* arg)
 static u16 g_dsImage[192 * 256];          /* RGB565, row-major */
 static volatile u32 g_videoFrames = 0;    /* bumps on every received packet */
 static volatile u64 g_lastVideoTime = 0;
-static volatile bool g_zoom = false;
+static volatile bool g_zoom = true;   /* enlarged is the default */
 static int g_videoFd = -1;
+
+/* receipt of video packets, reported back to the PC in every input packet */
+static LightLock g_ackLock;
+static u32 g_ackSeq = 0;
+static u64 g_ackMask = 0;
+static bool g_ackValid = false;
+
+static void noteVideoSeq(u32 seq)
+{
+    LightLock_Lock(&g_ackLock);
+    /* a big jump backwards means melonDS was restarted: start over */
+    if (!g_ackValid || (s32)(seq - g_ackSeq) < -4096)
+    {
+        g_ackSeq = seq;
+        g_ackMask = 1;
+        g_ackValid = true;
+    }
+    else if ((s32)(seq - g_ackSeq) > 0)
+    {
+        u32 d = seq - g_ackSeq;
+        g_ackMask = (d >= 64) ? 0 : (g_ackMask << d);
+        g_ackMask |= 1;
+        g_ackSeq = seq;
+    }
+    else
+    {
+        u32 d = g_ackSeq - seq;
+        if (d < 64) g_ackMask |= (1ULL << d);
+    }
+    LightLock_Unlock(&g_ackLock);
+}
+
+static void decodeTile(int type, const u8* p, int tx, int ty)
+{
+    u16* dst = &g_dsImage[ty * 256 + tx];
+    switch (type)
+    {
+    case LINK_TILE_RAW:
+        for (int y = 0; y < 8; y++) memcpy(dst + y * 256, p + y * 16, 16);
+        break;
+    case LINK_TILE_SOLID_T:
+    {
+        u16 c; memcpy(&c, p, 2);
+        for (int y = 0; y < 8; y++) for (int x = 0; x < 8; x++) dst[y * 256 + x] = c;
+        break;
+    }
+    case LINK_TILE_PAL2:
+    {
+        u16 pal[2]; memcpy(pal, p, 4);
+        const u8* bits = p + 4;
+        for (int y = 0; y < 8; y++)
+            for (int x = 0; x < 8; x++) dst[y * 256 + x] = pal[(bits[y] >> x) & 1];
+        break;
+    }
+    case LINK_TILE_PAL4:
+    {
+        u16 pal[4]; memcpy(pal, p, 8);
+        for (int y = 0; y < 8; y++)
+        {
+            u16 row; memcpy(&row, p + 8 + y * 2, 2);
+            for (int x = 0; x < 8; x++) dst[y * 256 + x] = pal[(row >> (x * 2)) & 3];
+        }
+        break;
+    }
+    case LINK_TILE_PAL16:
+    {
+        u16 pal[16]; memcpy(pal, p, 32);
+        for (int y = 0; y < 8; y++)
+        {
+            u32 row; memcpy(&row, p + 32 + y * 4, 4);
+            for (int x = 0; x < 8; x++) dst[y * 256 + x] = pal[(row >> (x * 4)) & 15];
+        }
+        break;
+    }
+    }
+}
+
+static int tilePayloadSize(int type)
+{
+    switch (type)
+    {
+    case LINK_TILE_RAW: return 128;
+    case LINK_TILE_SOLID_T: return 2;
+    case LINK_TILE_PAL2: return 12;
+    case LINK_TILE_PAL4: return 24;
+    case LINK_TILE_PAL16: return 64;
+    default: return -1;
+    }
+}
 
 static void videoThread(void* arg)
 {
@@ -340,7 +429,7 @@ static void videoThread(void* arg)
         ssize_t n = recvfrom(g_videoFd, buf, sizeof(buf), 0, NULL, NULL);
         if (n <= 0)
         {
-            svcSleepThread(1000000); /* 1 ms */
+            svcSleepThread(500000); /* 0.5 ms */
             continue;
         }
         if ((size_t)n < sizeof(LinkFramePacket)) continue;
@@ -353,32 +442,17 @@ static void videoThread(void* arg)
         for (u32 e = 0; e < fp.entryCount; e++)
         {
             if (p + 2 > end) break;
-            u16 idx;
-            memcpy(&idx, p, 2);
+            u16 head;
+            memcpy(&head, p, 2);
             p += 2;
-            bool solid = (idx & LINK_TILE_SOLID) != 0;
-            idx &= ~LINK_TILE_SOLID;
-            if (idx >= LINK_TILE_COUNT) break;
-            int tx = (idx % LINK_TILES_X) * 8;
-            int ty = (idx / LINK_TILES_X) * 8;
-            if (solid)
-            {
-                if (p + 2 > end) break;
-                u16 c;
-                memcpy(&c, p, 2);
-                p += 2;
-                for (int y = 0; y < 8; y++)
-                    for (int x = 0; x < 8; x++)
-                        g_dsImage[(ty + y) * 256 + tx + x] = c;
-            }
-            else
-            {
-                if (p + 128 > end) break;
-                for (int y = 0; y < 8; y++)
-                    memcpy(&g_dsImage[(ty + y) * 256 + tx], p + y * 16, 16);
-                p += 128;
-            }
+            int idx = head & LINK_TILE_INDEX_MASK;
+            int type = head >> LINK_TILE_TYPE_SHIFT;
+            int size = tilePayloadSize(type);
+            if (idx >= LINK_TILE_COUNT || size < 0 || p + size > end) break;
+            decodeTile(type, p, (idx % LINK_TILES_X) * 8, (idx / LINK_TILES_X) * 8);
+            p += size;
         }
+        noteVideoSeq(fp.seq);
         g_videoFrames++;
         g_lastVideoTime = osGetTime();
     }
@@ -487,6 +561,14 @@ static void inputThread(void* arg)
             p.dsTouchX = dsX;
             p.dsTouchY = dsY;
             p.flags = (dsTouch ? LINK_INPUT_DSTOUCH : 0) | (g_zoom ? LINK_INPUT_ZOOM : 0);
+            LightLock_Lock(&g_ackLock);
+            if (g_ackValid)
+            {
+                p.flags |= LINK_INPUT_VIDEOACK;
+                p.videoAckSeq = g_ackSeq;
+                p.videoAckMask = g_ackMask;
+            }
+            LightLock_Unlock(&g_ackLock);
             sendto(g_udpFd, &p, sizeof(p), 0, (struct sockaddr*)&peer, sizeof(peer));
         }
 
@@ -567,6 +649,32 @@ static void drawBottom(bool haveVideo, bool zoom, bool touching, int tx, int ty)
 }
 
 /* ------------------------------------------------------------------ */
+/* settings on the SD card                                             */
+
+#define CONFIG_PATH "sdmc:/3ds/melonDS-Link.cfg"
+
+static void loadConfig(void)
+{
+    FILE* f = fopen(CONFIG_PATH, "r");
+    if (!f) return;
+    char line[64];
+    while (fgets(line, sizeof(line), f))
+    {
+        int v;
+        if (sscanf(line, "zoom=%d", &v) == 1) g_zoom = v != 0;
+    }
+    fclose(f);
+}
+
+static void saveConfig(void)
+{
+    FILE* f = fopen(CONFIG_PATH, "w");
+    if (!f) return;
+    fprintf(f, "zoom=%d\n", g_zoom ? 1 : 0);
+    fclose(f);
+}
+
+/* ------------------------------------------------------------------ */
 
 int main(int argc, char** argv)
 {
@@ -580,6 +688,8 @@ int main(int argc, char** argv)
     osSetSpeedupEnable(true);
     irrstInit();   /* C-stick / ZL / ZR on New 3DS */
     LightLock_Init(&g_lock);
+    LightLock_Init(&g_ackLock);
+    loadConfig();
 
     printf("\x1b[1;1H\x1b[36mmelonDS Link\x1b[0m  (Protokoll v%u)\n\n", (unsigned)LINK_VERSION);
 
@@ -627,6 +737,10 @@ int main(int argc, char** argv)
     addr.sin_port = htons(LINK_VIDEO_PORT);
     bind(g_videoFd, (struct sockaddr*)&addr, sizeof(addr));
     fcntl(g_videoFd, F_SETFL, fcntl(g_videoFd, F_GETFL, 0) | O_NONBLOCK);
+    {
+        int rcv = 128 * 1024;   /* room for bursts of tile packets */
+        setsockopt(g_videoFd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
+    }
 
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
@@ -636,6 +750,7 @@ int main(int argc, char** argv)
 
     u32 lastVideoFrames = (u32)-1;
     bool lastZoom = !g_zoom, lastHaveVideo = true;
+    bool savedZoom = g_zoom;
     int redrawBoth = 2;
 
     while (aptMainLoop() && g_running)
@@ -653,6 +768,7 @@ int main(int argc, char** argv)
         if (g_videoFrames != lastVideoFrames || zoom != lastZoom || haveVideo != lastHaveVideo ||
             (!haveVideo && (in.keys & KEY_TOUCH)))
             redrawBoth = 2;
+        if (zoom != savedZoom) { saveConfig(); savedZoom = zoom; }
         lastVideoFrames = g_videoFrames;
         lastZoom = zoom;
         lastHaveVideo = haveVideo;

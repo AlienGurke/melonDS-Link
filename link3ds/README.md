@@ -11,9 +11,12 @@ die SD-Karte (Spielstände, später ROMs).
 4. Spielen. Der untere 3DS-Bildschirm zeigt den unteren DS-Bildschirm –
    egal, was am PC-Monitor angezeigt wird (auch bei „nur oberer Bildschirm“).
 
-**Anzeigemodi** (C-Stick nach oben wechselt):
+**Anzeigemodi** (C-Stick nach oben wechselt, die Wahl wird gespeichert):
+- *Vergrößert* (Standard): auf den ganzen 3DS-Bildschirm (320×240) skaliert.
 - *Original*: 256×192 Pixel 1:1, mittig – gestochen scharf.
-- *Vergrößert*: auf den ganzen 3DS-Bildschirm (320×240) skaliert.
+
+Das Bild wird kachelweise übertragen und mit Farbpaletten komprimiert. Der 3DS
+bestätigt empfangene Pakete; verlorene Kacheln schickt melonDS sofort neu.
 
 | 3DS            | melonDS                      |
 |----------------|------------------------------|
@@ -30,6 +33,8 @@ die SD-Karte (Spielstände, später ROMs).
 ## Bauen
 Mit devkitPro/devkitARM: `make -C link3ds`. GitHub Actions baut die App
 automatisch (Workflow „3DS (melonDS Link)“).
+
+Einstellungen: `sd:/3ds/melonDS-Link.cfg`.
 
 Protokoll: `src/frontend/qt_sdl/LinkProto.h` (TCP 6543, UDP 6544 Eingaben, UDP 6545 Bild).
 PC-App und 3DS-App müssen dieselbe Protokollversion haben.
