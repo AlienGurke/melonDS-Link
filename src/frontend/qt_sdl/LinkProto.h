@@ -52,10 +52,22 @@ enum LinkCommand
     LINK_CMD_READSTREAMZ= 12,/* like READSTREAM, but after the u64 length the
                                 data comes as LinkStreamBlock + payload pieces
                                 (LZ4-compressed, a fill byte, or raw) */
-    LINK_CMD_SPEEDTEST  = 13,/* in: u32 megabytes  out: u64 length, then that many
-                                bytes from RAM (no SD card, no compression):
-                                measures the pure network speed */
+    LINK_CMD_SPEEDTEST  = 13,/* in: LinkTuning (only megabytes needed)  out: u64
+                                length, then that many bytes from RAM (no SD card,
+                                no compression): measures the pure network speed
+                                with the given send settings */
+    LINK_CMD_GETSTATS   = 14,/* in: -   out: text with the 3DS transfer statistics */
+    LINK_CMD_SETTUNING  = 15,/* in: LinkTuning: use these send settings from now on */
 };
+
+/* send settings of the 3DS (0 = keep the current value) */
+typedef struct LinkTuning
+{
+    uint32_t megabytes;   /* SPEEDTEST only */
+    uint32_t sndbuf;      /* SO_SNDBUF of the data connection */
+    uint32_t piece;       /* bytes per send() call */
+    uint32_t sleepUs;     /* pause when the send buffer is full */
+} LinkTuning;
 
 /* Events the 3DS has for melonDS (fetched with LINK_CMD_POLLEVENT) */
 enum LinkEventType

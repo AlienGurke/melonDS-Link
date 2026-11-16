@@ -49,6 +49,9 @@ public:
     static std::string RomCacheDir();
     static std::string BackupDir(const std::string& gameName);
 
+    // append a line to melonDS-Link/link-log.txt (with date and time)
+    static void Log(const std::string& line);
+
     // keep the newest `keep` backups of a game (also used by tests)
     static void WriteBackup(const std::string& gameName, const uint8_t* data, uint32_t len, int keep = 5);
 

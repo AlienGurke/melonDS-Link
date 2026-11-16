@@ -639,7 +639,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             actLinkDisconnect = menu->addAction("Trennen");
             connect(actLinkDisconnect, &QAction::triggered, this, &MainWindow::onLinkDisconnect);
 
-            QAction* actLinkSpeed = menu->addAction("WLAN-Geschwindigkeit testen (32 MB)");
+            QAction* actLinkSpeed = menu->addAction("WLAN-Geschwindigkeit testen und optimieren...");
             connect(actLinkSpeed, &QAction::triggered, this, [this]
             {
                 if (Link::Get().GetState() != Link::State::Connected)
@@ -647,20 +647,82 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     QMessageBox::information(this, "melonDS Link", "Zuerst mit dem 3DS verbinden.");
                     return;
                 }
-                emuInstance->osdAddMessage(0, "3DS Link: WLAN-Test laeuft (32 MB)...");
+                if (QMessageBox::question(this, "melonDS Link",
+                        "Der 3DS sendet jetzt mehrmals je 8 MB Testdaten mit verschiedenen Einstellungen "
+                        "(dauert ca. 1-2 Minuten). Die schnellste Einstellung wird danach automatisch verwendet.\n\n"
+                        "Starten?") != QMessageBox::Yes)
+                    return;
+                emuInstance->osdAddMessage(0, "3DS Link: WLAN-Test laeuft...");
                 std::thread([this]
                 {
-                    double rate = 0;
-                    bool ok = Link::Get().SpeedTest(32, rate);
-                    QString text = ok
-                        ? QString("Reine WLAN-Geschwindigkeit vom 3DS zum PC:\n\n%1 KB/s  (%2 MB/s)\n\n"
-                                  "Zum Vergleich: ftpd/WinSCP lag bei dir bei ca. 1600 KB/s.\n"
-                                  "Die Zeile oben auf dem 3DS zeigt dieselbe Messung.")
-                              .arg((int)(rate / 1024)).arg(rate / 1048576.0, 0, 'f', 2)
-                        : QString("Test fehlgeschlagen. Ist auf dem 3DS die neueste melonDS-Link-App?");
+                    struct Cfg { uint32_t buf, piece, sleep; };
+                    std::vector<Cfg> cfgs = {
+                        {32768, 65536, 500}, {65536, 65536, 500}, {131072, 65536, 500}, {262144, 65536, 500},
+                        {32768, 16384, 500}, {131072, 16384, 500}, {131072, 131072, 500}, {262144, 262144, 500},
+                    };
+                    QString table;
+                    Link::Session::Log("WLAN-Test gestartet");
+                    double bestRate = 0;
+                    Cfg best = cfgs[0];
+                    auto runOne = [&](const Cfg& c) -> double
+                    {
+                        LinkTuning t = {};
+                        t.megabytes = 8;
+                        t.sndbuf = c.buf;
+                        t.piece = c.piece;
+                        t.sleepUs = c.sleep;
+                        double rate = 0;
+                        bool ok = Link::Get().SpeedTest(t, rate);
+                        char line[160];
+                        snprintf(line, sizeof(line), "Puffer %3uK  Stueck %3uK  Pause %4uus:  %s",
+                                 c.buf / 1024, c.piece / 1024, c.sleep,
+                                 ok ? (std::to_string((int)(rate / 1024)) + " KB/s").c_str() : "Fehler");
+                        table += QString(line) + "\n";
+                        Link::Session::Log(std::string("  ") + line);
+                        Link::Get().PostMessage(std::string("3DS Link: ") + line);
+                        if (ok && rate > bestRate) { bestRate = rate; best = c; }
+                        return ok ? rate : 0;
+                    };
+                    for (const Cfg& c : cfgs)
+                    {
+                        if (Link::Get().GetState() != Link::State::Connected) break;
+                        runOne(c);
+                    }
+                    // fine-tune the pause with the best buffer/piece
+                    for (uint32_t sl : {100u, 2000u})
+                        if (Link::Get().GetState() == Link::State::Connected)
+                            runOne({best.buf, best.piece, sl});
+
+                    QString text;
+                    if (bestRate > 0)
+                    {
+                        LinkTuning t = {};
+                        t.sndbuf = best.buf;
+                        t.piece = best.piece;
+                        t.sleepUs = best.sleep;
+                        Link::Get().SetTuning(t);
+                        Link::Get().SetDefaultTuning(t);
+                        char sum[200];
+                        snprintf(sum, sizeof(sum), "Beste Einstellung: Puffer %uK, Stueck %uK, Pause %uus -> %d KB/s (wird ab jetzt verwendet)",
+                                 best.buf / 1024, best.piece / 1024, best.sleep, (int)(bestRate / 1024));
+                        Link::Session::Log(sum);
+                        text = "Ergebnisse (3DS -> PC, reine WLAN-Geschwindigkeit):\n\n" + table + "\n" + QString(sum) +
+                               "\n\nZum Vergleich: ftpd/WinSCP ca. 1600 KB/s.\nAlles steht auch in melonDS-Link\\link-log.txt.";
+                        QMetaObject::invokeMethod(this, [this, best]
+                        {
+                            globalCfg.SetInt("Link.SendBuf", (int)best.buf);
+                            globalCfg.SetInt("Link.SendPiece", (int)best.piece);
+                            globalCfg.SetInt("Link.SendPauseUs", (int)best.sleep);
+                            Config::Save();
+                        }, Qt::QueuedConnection);
+                    }
+                    else
+                        text = "Test fehlgeschlagen. Ist auf dem 3DS die neueste melonDS-Link-App?";
                     QMetaObject::invokeMethod(this, [this, text]
                     {
-                        QMessageBox::information(this, "melonDS Link", text);
+                        QMessageBox box(QMessageBox::Information, "melonDS Link", text, QMessageBox::Ok, this);
+                        box.setStyleSheet("QLabel{font-family: Consolas, monospace;}");
+                        box.exec();
                     }, Qt::QueuedConnection);
                 }).detach();
             });
@@ -681,6 +743,13 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 {
                     Link::Session::Get().OnSaveWritten(path, data, len);
                 };
+                {
+                    LinkTuning t = {};
+                    t.sndbuf = (uint32_t)std::max(0, globalCfg.GetInt("Link.SendBuf"));
+                    t.piece = (uint32_t)std::max(0, globalCfg.GetInt("Link.SendPiece"));
+                    t.sleepUs = (uint32_t)std::max(0, globalCfg.GetInt("Link.SendPauseUs"));
+                    Link::Get().SetDefaultTuning(t);
+                }
                 linkTimer = new QTimer(this);
                 connect(linkTimer, &QTimer::timeout, this, &MainWindow::onLinkTick);
                 linkTimer->start(200);

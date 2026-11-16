@@ -97,6 +97,12 @@ public:
     // pure network speed test: the 3DS sends `megabytes` MB from RAM.
     // Returns false on errors; bytesPerSec gets the measured rate.
     bool SpeedTest(uint32_t megabytes, double& bytesPerSec);
+    bool SpeedTest(const LinkTuning& settings, double& bytesPerSec);
+
+    // send settings of the 3DS; the default is applied on every (re)connect
+    bool SetTuning(const LinkTuning& t);
+    void SetDefaultTuning(const LinkTuning& t) { std::lock_guard<std::mutex> l(tuneMutex); defaultTuning = t; }
+    std::string GetStats();   // the 3DS transfer statistics as text
 
     // bytes that actually went over the WiFi during the last ReadStream
     uint64_t LastStreamWireBytes() const { return lastWireBytes.load(); }
@@ -165,6 +171,8 @@ private:
     std::atomic<bool> haveVideoAddr { false };
 
     std::atomic<uint64_t> lastWireBytes { 0 };
+    std::mutex tuneMutex;
+    LinkTuning defaultTuning = {};
 
     std::mutex reqMutex;   // serialises Request()
     intptr_t tcpSock = -1;

@@ -106,6 +106,17 @@ std::string Session::BackupDir(const std::string& gameName)
     return BaseDir() + "/Backups/" + gameName;
 }
 
+void Session::Log(const std::string& line)
+{
+    static std::mutex m;
+    std::lock_guard<std::mutex> lock(m);
+    QDir().mkpath(q(BaseDir()));
+    QFile f(q(BaseDir() + "/link-log.txt"));
+    if (!f.open(QIODevice::Append | QIODevice::Text)) return;
+    QString l = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") + "  " + q(line) + "\n";
+    f.write(l.toUtf8());
+}
+
 void Session::WriteBackup(const std::string& gameName, const uint8_t* data, uint32_t len, int keep)
 {
     QString dir = q(BackupDir(gameName));
@@ -284,6 +295,9 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
                      human((uint64_t)(wireDone / (secs > 0 ? secs : 1))).c_str(),
                      size > 0 ? (int)(100 - wireDone * 100 / size) : 0);
             c.PostMessage(summary);
+            Log(std::string(summary + 11) + " (" + romName + ", " + human(size) + ")");
+            std::string st = c.GetStats();
+            if (!st.empty()) Log("  3DS: " + st);
         }
         out.close();
         QFile::remove(q(localRom));

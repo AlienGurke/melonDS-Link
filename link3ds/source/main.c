@@ -63,13 +63,17 @@ static volatile u64 g_statSendSleeps;   /* 0.5 ms sleeps because the WiFi send b
 static volatile u64 g_statReadTicks, g_statReadBytes;   /* SD card */
 static volatile u64 g_statPackTicks, g_statPackBytes;   /* LZ4 */
 
+/* send settings, adjustable from melonDS (LINK_CMD_SETTUNING / speed test) */
+static volatile u32 g_sendPiece = 0x10000;     /* bytes per send() call */
+static volatile u32 g_sendSleepUs = 500;       /* pause when the send buffer is full */
+static volatile u32 g_sendBuf = 32768;         /* SO_SNDBUF of the data connection */
+
 static bool sendAll(int fd, const void* buf, size_t len)
 {
     const uint8_t* p = (const uint8_t*)buf;
     while (len > 0)
     {
-        /* 64 KB per call, like ftpd: bigger sends are slower through the 3DS socket service */
-        size_t piece = len > 0x10000 ? 0x10000 : len;
+        size_t piece = len > g_sendPiece ? g_sendPiece : len;
         ssize_t n = send(fd, p, piece, 0);
         if (n < 0)
         {
@@ -77,7 +81,7 @@ static bool sendAll(int fd, const void* buf, size_t len)
             {
                 if (!g_running) return false;
                 g_statSendSleeps++;
-                svcSleepThread(500000);   /* 0.5 ms, outside the socket service */
+                svcSleepThread((s64)g_sendSleepUs * 1000);   /* outside the socket service */
                 continue;
             }
             return false;
@@ -519,7 +523,7 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
                and how fast the SD card and LZ4 are on their own (MB/s) */
             u64 el = svcGetSystemTick() - tick0;
             unsigned wPct = el ? (unsigned)(waitTotal * 100 / el) : 0;
-            unsigned fPct = secs1000 ? (unsigned)(g_statSendSleeps / 2 * 100 / secs1000) : 0;
+            unsigned fPct = secs1000 ? (unsigned)(g_statSendSleeps * g_sendSleepUs / 10 / secs1000) : 0;
             double sd = g_statReadTicks ? g_statReadBytes / (g_statReadTicks / (double)SYSCLOCK_ARM11) / 1048576.0 : 0;
             double lz = g_statPackTicks ? g_statPackBytes / (g_statPackTicks / (double)SYSCLOCK_ARM11) / 1048576.0 : 0;
             snprintf(g_xferInfo2, sizeof(g_xferInfo2), "Wartet: Leser %u%% WLAN %u%%  SD %.1f LZ4 %.1f",
@@ -709,35 +713,75 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
 
     case LINK_CMD_SPEEDTEST:
     {
-        /* pure network test: data straight from RAM */
-        u32 mb = (h->len >= 4) ? *(u32*)payload : 16;
+        /* pure network test: data straight from RAM, with the given settings */
+        LinkTuning t;
+        memset(&t, 0, sizeof(t));
+        memcpy(&t, payload, h->len < sizeof(t) ? h->len : sizeof(t));
+        u32 mb = t.megabytes;
         if (mb == 0 || mb > 256) mb = 16;
         static u8* junk = NULL;
         if (!junk)
         {
-            junk = (u8*)memalign(0x1000, 0x10000);
+            junk = (u8*)memalign(0x1000, 0x40000);
             if (!junk) return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
             u32 x = 0x12345678;
-            for (int k = 0; k < 0x10000; k++) { x = x * 1664525u + 1013904223u; junk[k] = (u8)(x >> 24); }
+            for (int k = 0; k < 0x40000; k++) { x = x * 1664525u + 1013904223u; junk[k] = (u8)(x >> 24); }
         }
+        u32 oldPiece = g_sendPiece, oldSleep = g_sendSleepUs, oldBuf = g_sendBuf;
+        if (t.piece) g_sendPiece = t.piece > 0x40000 ? 0x40000 : t.piece;
+        if (t.sleepUs) g_sendSleepUs = t.sleepUs;
+        if (t.sndbuf) { int b = (int)t.sndbuf; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &b, sizeof(b)); }
+
         u64 total = (u64)mb * 1024 * 1024;
-        if (!sendResponse(fd, h, LINK_OK, &total, sizeof(total))) return false;
+        bool okSend = sendResponse(fd, h, LINK_OK, &total, sizeof(total));
         g_statSendSleeps = 0;
         g_bulkActive = true;
         u64 t0 = osGetTime();
-        bool okSend = true;
-        for (u64 sent = 0; sent < total && okSend; sent += 0x10000)
-            okSend = sendAll(fd, junk, 0x10000);
+        for (u64 sent = 0; sent < total && okSend; sent += 0x40000)
+            okSend = sendAll(fd, junk, 0x40000);
         g_bulkActive = false;
-        if (!okSend) return false;
         u64 ms = osGetTime() - t0;
+
+        g_sendPiece = oldPiece;
+        g_sendSleepUs = oldSleep;
+        if (t.sndbuf) { int b = (int)oldBuf; setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &b, sizeof(b)); }
+        if (!okSend) return false;
+
         LightLock_Lock(&g_lock);
-        snprintf(g_xferInfo, sizeof(g_xferInfo), "Speedtest: %lu KB/s (%lu MB in %lu.%lus)",
-                 ms ? (unsigned long)(total / ms) : 0, (unsigned long)mb, (unsigned long)(ms / 1000), (unsigned long)(ms % 1000 / 100));
+        snprintf(g_xferInfo, sizeof(g_xferInfo), "Speedtest: %lu KB/s (Puffer %luK, Stueck %luK)",
+                 ms ? (unsigned long)(total / ms) : 0, (unsigned long)((t.sndbuf ? t.sndbuf : oldBuf) / 1024),
+                 (unsigned long)((t.piece ? t.piece : oldPiece) / 1024));
         snprintf(g_xferInfo2, sizeof(g_xferInfo2), "Wartet: WLAN-Puffer voll %lu%%",
-                 ms ? (unsigned long)(g_statSendSleeps / 2 * 100 / ms) : 0);
+                 ms ? (unsigned long)(g_statSendSleeps * g_sendSleepUs / 10 / ms) : 0);
         LightLock_Unlock(&g_lock);
         return true;
+    }
+
+    case LINK_CMD_GETSTATS:
+    {
+        char txt[256];
+        LightLock_Lock(&g_lock);
+        snprintf(txt, sizeof(txt), "%s | %s | Puffer %luK, Stueck %luK, Pause %luus",
+                 g_xferInfo, g_xferInfo2, (unsigned long)(g_sendBuf / 1024),
+                 (unsigned long)(g_sendPiece / 1024), (unsigned long)g_sendSleepUs);
+        LightLock_Unlock(&g_lock);
+        return sendResponse(fd, h, LINK_OK, txt, (uint32_t)strlen(txt));
+    }
+
+    case LINK_CMD_SETTUNING:
+    {
+        LinkTuning t;
+        memset(&t, 0, sizeof(t));
+        memcpy(&t, payload, h->len < sizeof(t) ? h->len : sizeof(t));
+        if (t.piece) g_sendPiece = t.piece > 0x40000 ? 0x40000 : t.piece;
+        if (t.sleepUs) g_sendSleepUs = t.sleepUs;
+        if (t.sndbuf)
+        {
+            g_sendBuf = t.sndbuf;
+            int b = (int)t.sndbuf;
+            setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &b, sizeof(b));
+        }
+        return sendResponse(fd, h, LINK_OK, NULL, 0);
     }
 
     case LINK_CMD_REPLACE:
@@ -798,9 +842,10 @@ static void serverThread(void* arg)
         int flags = fcntl(fd, F_GETFL, 0);
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         {
-            int buf = 32768;   /* what ftpd uses on the 3DS; larger was slower */
+            int buf = (int)g_sendBuf;   /* 32 KB like ftpd unless melonDS tuned it */
             setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
-            setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof(buf));
+            int rbuf = 32768;
+            setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rbuf, sizeof(rbuf));
         }
 
         LightLock_Lock(&g_lock);

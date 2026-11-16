@@ -372,6 +372,28 @@ broken:
 
 bool Client::SpeedTest(uint32_t megabytes, double& bytesPerSec)
 {
+    LinkTuning t = {};
+    t.megabytes = megabytes;
+    return SpeedTest(t, bytesPerSec);
+}
+
+bool Client::SetTuning(const LinkTuning& t)
+{
+    uint16_t status;
+    return Request(LINK_CMD_SETTUNING, &t, sizeof(t), status) && status == LINK_OK;
+}
+
+std::string Client::GetStats()
+{
+    uint16_t status;
+    std::vector<uint8_t> out;
+    if (!Request(LINK_CMD_GETSTATS, nullptr, 0, status, &out) || status != LINK_OK) return "";
+    return std::string(out.begin(), out.end());
+}
+
+bool Client::SpeedTest(const LinkTuning& settings, double& bytesPerSec)
+{
+    uint32_t megabytes = settings.megabytes;
     bytesPerSec = 0;
     std::lock_guard<std::mutex> lock(reqMutex);
     if (tcpSock == -1) return false;
@@ -381,12 +403,13 @@ bool Client::SpeedTest(uint32_t megabytes, double& bytesPerSec)
     h.magic = LINK_MAGIC;
     h.cmd = LINK_CMD_SPEEDTEST;
     h.seq = seq++;
-    h.len = sizeof(megabytes);
+    h.len = sizeof(settings);
     LinkHeader resp = {};
     uint64_t total = 0, got = 0;
     std::vector<uint8_t> buf(1024 * 1024);
     auto t0 = std::chrono::steady_clock::now();
-    if (!sendAll(s, &h, sizeof(h)) || !sendAll(s, &megabytes, sizeof(megabytes))) goto broken;
+    (void)megabytes;
+    if (!sendAll(s, &h, sizeof(h)) || !sendAll(s, &settings, sizeof(settings))) goto broken;
     if (!recvAll(s, &resp, sizeof(resp)) || resp.magic != LINK_MAGIC || resp.seq != h.seq ||
         resp.cmd != (LINK_CMD_SPEEDTEST | LINK_RESP))
         goto broken;
@@ -558,6 +581,14 @@ void Client::worker(std::string host)
         pushMessage(std::string("3DS Link: verbunden mit ") + hello.name + " (" + host + ")");
         everConnected = true;
         SetStatusText("melonDS verbunden");
+        {
+            LinkTuning t;
+            {
+                std::lock_guard<std::mutex> l(tuneMutex);
+                t = defaultTuning;
+            }
+            if (t.sndbuf || t.piece || t.sleepUs) SetTuning(t);
+        }
 
         int64_t lastHello = 0, lastPing = nowMs();
         while (!stopRequested)
