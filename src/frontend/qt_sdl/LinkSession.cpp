@@ -313,6 +313,26 @@ uint64_t Session::PartialSize(const std::string& name)
     return info.exists() ? (uint64_t)info.size() : 0;
 }
 
+bool Session::DeleteFromPC(const std::string& name, bool backups)
+{
+    const std::string game = stripExt(name);
+    {
+        std::lock_guard<std::mutex> lock(activeMutex);
+        if (!activeGameName.empty() && activeGameName == game) return false;
+    }
+    std::unique_lock<std::mutex> copyLock(copyMutex, std::try_to_lock);
+    if (!copyLock.owns_lock()) return false;   // being copied right now
+
+    const QString dir = q(RomCacheDir()) + "/";
+    QFile::remove(dir + q(name));
+    QFile::remove(dir + q(name) + ".part");
+    QFile::remove(dir + q(game) + ".sav");     // the PC copy; fetched again from the 3DS at the next start
+    if (backups) QDir(q(BackupDir(game))).removeRecursively();
+    Log("Vom PC geloescht: " + name + (backups ? " (mit Backups)" : ""));
+    RequestOnPcSync();
+    return true;
+}
+
 bool Session::FetchGameList(std::string& romDir, std::vector<RemoteRom>& roms)
 {
     roms.clear();

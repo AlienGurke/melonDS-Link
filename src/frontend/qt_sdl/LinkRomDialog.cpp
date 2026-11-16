@@ -105,11 +105,13 @@ LinkRomDialog::LinkRomDialog(QWidget* parent) : QDialog(parent)
     btnRefresh = new QPushButton("Aktualisieren", this);
     btnCopySel = new QPushButton("Angehakte kopieren", this);
     btnCopyAll = new QPushButton("Alle fehlenden kopieren", this);
+    btnDelete = new QPushButton("Angehakte vom PC loeschen...", this);
     btnStop = new QPushButton("Anhalten", this);
     btnClose = new QPushButton("Schliessen", this);
     buttons->addWidget(btnRefresh);
     buttons->addWidget(btnCopySel);
     buttons->addWidget(btnCopyAll);
+    buttons->addWidget(btnDelete);
     buttons->addWidget(btnStop);
     buttons->addStretch(1);
     buttons->addWidget(btnClose);
@@ -118,6 +120,7 @@ LinkRomDialog::LinkRomDialog(QWidget* parent) : QDialog(parent)
     connect(btnRefresh, &QPushButton::clicked, this, [this] { refresh(); });
     connect(btnCopySel, &QPushButton::clicked, this, [this] { startCopy(true); });
     connect(btnCopyAll, &QPushButton::clicked, this, [this] { startCopy(false); });
+    connect(btnDelete, &QPushButton::clicked, this, [this] { deleteTicked(); });
     connect(btnStop, &QPushButton::clicked, this, [this]
     {
         stopReq = true;
@@ -172,6 +175,7 @@ void LinkRomDialog::setBusy(bool b)
     btnRefresh->setEnabled(!b);
     btnCopySel->setEnabled(!b && connected);
     btnCopyAll->setEnabled(!b && connected);
+    btnDelete->setEnabled(!b);
     btnStop->setEnabled(b);
     bar->setVisible(b);
 }
@@ -239,8 +243,7 @@ void LinkRomDialog::fillTable()
 
         auto* name = new QTableWidgetItem(q(stripExt(rom.name)));
         name->setData(Qt::UserRole, q(rom.name));
-        name->setFlags(Qt::ItemIsEnabled | (have ? Qt::NoItemFlags : Qt::ItemIsUserCheckable));
-        if (!have)
+        name->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
         {
             bool t = std::find(ticked.begin(), ticked.end(), rom.name) != ticked.end();
             name->setCheckState(t ? Qt::Checked : Qt::Unchecked);
@@ -281,7 +284,7 @@ void LinkRomDialog::startCopy(bool onlySelected)
     }
     if (queue.empty())
     {
-        info->setText(onlySelected ? "Nichts angehakt (bereits kopierte Spiele lassen sich nicht anhaken)."
+        info->setText(onlySelected ? "Keins der angehakten Spiele fehlt auf dem PC."
                                    : "Alle Spiele sind schon auf dem PC.");
         return;
     }
@@ -373,6 +376,55 @@ void LinkRomDialog::startCopy(bool onlySelected)
         }
         workerDone = true;
     });
+}
+
+void LinkRomDialog::deleteTicked()
+{
+    if (busy) return;
+    std::vector<Link::Session::RemoteRom> sel;
+    uint64_t bytes = 0;
+    for (int r = 0; r < table->rowCount() && r < (int)roms.size(); r++)
+    {
+        const auto& rom = roms[r];
+        if (table->item(r, 0)->checkState() != Qt::Checked) continue;
+        bool have = Link::Session::IsOnPC(rom.name, rom.size);
+        uint64_t part = Link::Session::PartialSize(rom.name);
+        if (!have && part == 0) continue;
+        sel.push_back(rom);
+        bytes += have ? rom.size : part;
+    }
+    if (sel.empty())
+    {
+        info->setText("Keins der angehakten Spiele liegt auf dem PC.");
+        return;
+    }
+
+    QMessageBox box(QMessageBox::Question, "melonDS Link",
+        QString("%1 Spiel(e) vom PC loeschen (%2)?\n\n"
+                "Auf dem 3DS bleibt alles, auch die Spielstaende. Beim naechsten Start wird die ROM "
+                "einfach wieder kopiert.").arg(sel.size()).arg(q(human(bytes))),
+        QMessageBox::Yes | QMessageBox::No, this);
+    auto* withBackups = new QCheckBox("Auch die Spielstand-Backups dieser Spiele am PC loeschen");
+    box.setCheckBox(withBackups);
+    box.setDefaultButton(QMessageBox::No);
+    if (box.exec() != QMessageBox::Yes) return;
+
+    int done = 0;
+    std::string skipped;
+    for (const auto& rom : sel)
+    {
+        if (Link::Session::Get().DeleteFromPC(rom.name, withBackups->isChecked())) done++;
+        else skipped += (skipped.empty() ? "" : ", ") + stripExt(rom.name);
+    }
+    for (int r = 0; r < table->rowCount(); r++) table->item(r, 0)->setCheckState(Qt::Unchecked);
+    fillTable();
+    std::string msg = std::to_string(done) + " Spiel(e) vom PC geloescht.";
+    if (!skipped.empty()) msg += " Nicht geloescht (laeuft gerade oder wird kopiert): " + skipped;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        result = msg;
+    }
+    info->setText(q(msg));
 }
 
 void LinkRomDialog::onTimer()

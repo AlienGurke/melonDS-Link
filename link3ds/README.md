@@ -35,6 +35,8 @@ Das Fenster zeigt alle Spiele des 3DS mit Status (*auf dem PC*, *angefangen*, *f
 der kopierte Teil bleibt erhalten und wird beim nächsten Mal fortgesetzt (auch beim
 Spielstart). Wählt man währenddessen auf dem 3DS ein Spiel, hält das Vorladen an und
 das Spiel geht vor. Während des Kopierens steht der untere 3DS-Bildschirm still.
+„Angehakte vom PC löschen…“ entfernt ROMs wieder vom PC (auf dem 3DS bleibt alles);
+auf Wunsch auch die Spielstand-Backups dieser Spiele.
 
 **Füllbereich überspringen** (Häkchen im selben Fenster, aus = Standard): DS-ROMs sind
 hinter den eigentlichen Spieldaten mit Füllbytes aufgefüllt. Mit Häkchen liest der 3DS

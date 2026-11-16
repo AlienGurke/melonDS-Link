@@ -64,6 +64,10 @@ public:
     static bool IsOnPC(const std::string& name, uint64_t size);
     // bytes of an interrupted copy that will be continued (0 = none)
     static uint64_t PartialSize(const std::string& name);
+    // remove a ROM from the PC (and its PC copy of the save; the save on the
+    // 3DS stays). backups=true also deletes the save backups of that game.
+    // Returns false for the game that is running right now.
+    bool DeleteFromPC(const std::string& name, bool backups);
 
     // copy a ROM from the 3DS (continues an interrupted copy). `progress` is
     // called regularly with bytes done / over the WiFi and seconds so far; it
