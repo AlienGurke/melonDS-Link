@@ -1004,7 +1004,10 @@ void EmuThread::updateRenderer()
         .ScaleFactor = cfg.GetInt("3D.GL.ScaleFactor"),
         .Threaded = cfg.GetBool("3D.Soft.Threaded"),
         .HiresCoordinates = cfg.GetBool("3D.GL.HiresCoordinates"),
-        .BetterPolygons = cfg.GetBool("3D.GL.BetterPolygons")
+        .BetterPolygons = cfg.GetBool("3D.GL.BetterPolygons"),
+        .TextureFilter = cfg.GetInt("3D.GL.TextureFilter"),
+        .TextureFilterScale = cfg.GetInt("3D.GL.TextureFilterScale") > 0 ? cfg.GetInt("3D.GL.TextureFilterScale") : 4,
+        .TextureFilterObjectsOnly = cfg.GetBool("3D.GL.TextureFilterObjectsOnly"),
     };
 
     nds->GetRenderer().SetRenderSettings(settings);

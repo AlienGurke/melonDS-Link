@@ -1,6 +1,7 @@
 #ifndef GPU3D_TEXCACHE
 #define GPU3D_TEXCACHE
 
+#include "GPU3D_TexFilter.h"
 #include "types.h"
 #include "GPU.h"
 
@@ -150,7 +151,7 @@ public:
                 it++;
                 continue;
             invalidate:
-                FreeTextures[entry.WidthLog2][entry.HeightLog2].push_back(entry.Texture);
+                FreeTextures[entry.WidthLog2][entry.HeightLog2][entry.Filtered].push_back(entry.Texture);
 
                 //printf("invalidating texture %d\n", entry.ImageDescriptor);
 
@@ -269,19 +270,26 @@ public:
             entry.TexPalHash = MaskedHash(GPU.VRAMFlat_TexPal, sizeof(GPU.VRAMFlat_TexPal),
                 entry.TexPalStart, entry.TexPalSize);
 
-        auto& texArrays = TexArrays[widthLog2][heightLog2];
-        auto& freeTextures = FreeTextures[widthLog2][heightLog2];
+        // texture filter (melonDS Link): magnified textures live in their own arrays
+        u32 scale = 1;
+        if (Filter.Mode != texFilter_Off && TexFilter::Wants(Filter, DecodingBuffer, width, height))
+            scale = TexFilter::ScaleFor(Filter, width, height);
+        entry.Filtered = scale > 1 ? 1 : 0;
+        const u32 storeW = width * scale, storeH = height * scale;
+
+        auto& texArrays = TexArrays[widthLog2][heightLog2][entry.Filtered];
+        auto& freeTextures = FreeTextures[widthLog2][heightLog2][entry.Filtered];
 
         if (freeTextures.size() == 0)
         {
             texArrays.resize(texArrays.size()+1);
             TexHandleT& array = texArrays[texArrays.size()-1];
 
-            u32 layers = std::min<u32>((8*1024*1024) / (width*height*4), 64);
+            u32 layers = std::max<u32>(1, std::min<u32>((8*1024*1024) / (storeW*storeH*4), 64));
 
             // allocate new array texture
             //printf("allocating new layer set for %d %d %d %d\n", width, height, texArrays.size()-1, array.ImageDescriptor);
-            array = TexLoader.GenerateTexture(width, height, layers);
+            array = TexLoader.GenerateTexture(storeW, storeH, layers);
 
             for (u32 i = 0; i < layers; i++)
             {
@@ -294,7 +302,14 @@ public:
 
         entry.Texture = storagePlace;
 
-        TexLoader.UploadTexture(storagePlace.TextureID, width, height, storagePlace.Layer, DecodingBuffer);
+        if (scale > 1)
+        {
+            FilterBuffer.resize((size_t)storeW * storeH);
+            TexFilter::Upscale(Filter, DecodingBuffer, width, height, scale, FilterBuffer.data());
+            TexLoader.UploadTexture(storagePlace.TextureID, storeW, storeH, storagePlace.Layer, FilterBuffer.data());
+        }
+        else
+            TexLoader.UploadTexture(storagePlace.TextureID, width, height, storagePlace.Layer, DecodingBuffer);
         //printf("using storage place %d %d | %d %d (%d)\n", width, height, storagePlace.TexArrayIdx, storagePlace.LayerIdx, array.ImageDescriptor);
 
         textureHandle = storagePlace.TextureID;
@@ -308,13 +323,25 @@ public:
         {
             for (u32 j = 0; j < 8; j++)
             {
-                for (u32 k = 0; k < TexArrays[i][j].size(); k++)
-                    TexLoader.DeleteTexture(TexArrays[i][j][k]);
-                TexArrays[i][j].clear();
-                FreeTextures[i][j].clear();
+                for (u32 f = 0; f < 2; f++)
+                {
+                    for (u32 k = 0; k < TexArrays[i][j][f].size(); k++)
+                        TexLoader.DeleteTexture(TexArrays[i][j][f][k]);
+                    TexArrays[i][j][f].clear();
+                    FreeTextures[i][j][f].clear();
+                }
             }
         }
         Cache.clear();
+    }
+
+    // texture filter (melonDS Link). Changing it drops all cached textures,
+    // so they get decoded (and filtered) again. Needs the GL context.
+    void SetFilter(const TexFilterSettings& f)
+    {
+        if (f == Filter) return;
+        Filter = f;
+        Reset();
     }
 
 private:
@@ -333,6 +360,7 @@ private:
         u32 TextureRAMStart[2] {}, TextureRAMSize[2] {};
         u32 TexPalStart {}, TexPalSize {};
         u8 WidthLog2 {}, HeightLog2 {};
+        u8 Filtered {};   // stored magnified (in the filtered arrays)
         TexArrayEntry Texture {};
 
         u64 TextureHash[2] {};
@@ -342,8 +370,11 @@ private:
 
     TexLoaderT TexLoader;
 
-    std::vector<TexArrayEntry> FreeTextures[8][8] {};
-    std::vector<TexHandleT> TexArrays[8][8] {};
+    std::vector<TexArrayEntry> FreeTextures[8][8][2] {};
+    std::vector<TexHandleT> TexArrays[8][8][2] {};
+
+    TexFilterSettings Filter {};
+    std::vector<u32> FilterBuffer;
 
     u32 DecodingBuffer[1024*1024] {};
 };

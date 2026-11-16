@@ -44,6 +44,7 @@ public:
     void Reset() override;
 
     void SetRenderSettings(int scale, bool highResolutionCoordinates);
+    void SetTextureFilter(const TexFilterSettings& f) { Texcache.SetFilter(f); }
 
     void RenderFrame() override;
     void RestartFrame() override;

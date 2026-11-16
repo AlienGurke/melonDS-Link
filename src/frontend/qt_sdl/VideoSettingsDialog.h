@@ -88,6 +88,14 @@ private:
     int oldGLScale;
     int oldGLBetterPolygons;
     int oldHiresCoordinates;
+
+    // texture filter (melonDS Link)
+    class QComboBox* cbxTexFilter = nullptr;
+    class QComboBox* cbxTexFilterScale = nullptr;
+    class QCheckBox* cbTexFilterObjects = nullptr;
+    int oldTexFilter, oldTexFilterScale;
+    bool oldTexFilterObjects;
+    void updateTexFilterEnabled();
 };
 
 #endif // VIDEOSETTINGSDIALOG_H

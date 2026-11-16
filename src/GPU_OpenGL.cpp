@@ -329,15 +329,22 @@ void GLRenderer::SetRenderSettings(RendererSettings& settings)
     rend2d = dynamic_cast<GLRenderer2D*>(Rend2D_B.get());
     rend2d->SetScaleFactor(settings.ScaleFactor);
 
+    TexFilterSettings filter;
+    filter.Mode = settings.TextureFilter;
+    filter.Scale = settings.TextureFilterScale;
+    filter.ObjectsOnly = settings.TextureFilterObjectsOnly;
+
     if (IsCompute)
     {
         auto rend3d = dynamic_cast<ComputeRenderer3D *>(Rend3D.get());
         rend3d->SetRenderSettings(settings.ScaleFactor, settings.HiresCoordinates);
+        rend3d->SetTextureFilter(filter);
     }
     else
     {
         auto rend3d = dynamic_cast<GLRenderer3D *>(Rend3D.get());
         rend3d->SetRenderSettings(settings.ScaleFactor, settings.BetterPolygons);
+        rend3d->SetTextureFilter(filter);
     }
 }
 

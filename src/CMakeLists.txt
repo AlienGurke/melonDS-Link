@@ -41,6 +41,10 @@ add_library(core STATIC
     GPU3D_Soft.cpp
     GPU3D_Texcache.cpp
     GPU3D_Texcache.h
+    GPU3D_TexFilter.cpp
+    GPU3D_TexFilter.h
+    texfilter/xbrz/xbrz.cpp
+    texfilter/mmpx/mmpx.c
     Mic.cpp
     NDS.cpp
     NDSCart.cpp

@@ -828,6 +828,11 @@ struct RendererSettings
 
     // "improved polygon splitting" (regular OpenGL renderer)
     bool BetterPolygons;
+
+    // texture filter of the OpenGL renderers (texFilter_*, GPU3D_TexFilter.h)
+    int TextureFilter = 0;
+    int TextureFilterScale = 4;
+    bool TextureFilterObjectsOnly = false;
 };
 
 class Renderer

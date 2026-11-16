@@ -17,6 +17,9 @@
 */
 
 #include <QFileDialog>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QLabel>
 #include <QtGlobal>
 
 #include "types.h"
@@ -48,6 +51,18 @@ void VideoSettingsDialog::setEnabled()
     ui->cbxGLResolution->setEnabled(!softwareRenderer);
     ui->cbBetterPolygons->setEnabled(renderer == renderer3D_OpenGL);
     ui->cbxComputeHiResCoords->setEnabled(renderer == renderer3D_OpenGLCompute);
+    updateTexFilterEnabled();
+}
+
+void VideoSettingsDialog::updateTexFilterEnabled()
+{
+    if (!cbxTexFilter) return;
+    auto& cfg = emuInstance->getGlobalConfig();
+    bool gl = cfg.GetInt("3D.Renderer") != renderer3D_Software;
+    bool on = gl && cbxTexFilter->currentIndex() != 0;
+    cbxTexFilter->setEnabled(gl);
+    cbxTexFilterScale->setEnabled(on);
+    cbTexFilterObjects->setEnabled(on);
 }
 
 VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(new Ui::VideoSettingsDialog)
@@ -100,6 +115,49 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
     ui->cbBetterPolygons->setChecked(oldGLBetterPolygons != 0);
     ui->cbxComputeHiResCoords->setChecked(oldHiresCoordinates != 0);
 
+    // texture filter (melonDS Link): magnifies the textures of the 3D graphics
+    {
+        oldTexFilter = cfg.GetInt("3D.GL.TextureFilter");
+        oldTexFilterScale = cfg.GetInt("3D.GL.TextureFilterScale");
+        if (oldTexFilterScale <= 0) oldTexFilterScale = 4;
+        oldTexFilterObjects = cfg.GetBool("3D.GL.TextureFilterObjectsOnly");
+
+        auto* label = new QLabel("Texture filter:", this);
+        cbxTexFilter = new QComboBox(this);
+        cbxTexFilter->addItems({"Off", "MMPX (keeps the pixel-art look)", "xBRZ (smooth)"});
+        cbxTexFilter->setCurrentIndex(oldTexFilter >= 0 && oldTexFilter <= 2 ? oldTexFilter : 0);
+        cbxTexFilter->setWhatsThis("Magnifies the textures of the 3D graphics (characters, Pokemon, trees...) with a "
+                                   "pixel-art filter. Works with both OpenGL renderers.");
+        cbxTexFilterScale = new QComboBox(this);
+        cbxTexFilterScale->addItems({"2x", "4x"});
+        cbxTexFilterScale->setCurrentIndex(oldTexFilterScale >= 4 ? 1 : 0);
+        cbTexFilterObjects = new QCheckBox("Only characters and objects (textures with transparency)", this);
+        cbTexFilterObjects->setChecked(oldTexFilterObjects);
+
+        int row = ui->gridLayout_4->rowCount();
+        ui->gridLayout_4->addWidget(label, row, 0);
+        ui->gridLayout_4->addWidget(cbxTexFilter, row + 1, 0);
+        ui->gridLayout_4->addWidget(cbxTexFilterScale, row + 2, 0);
+        ui->gridLayout_4->addWidget(cbTexFilterObjects, row + 3, 0);
+
+        connect(cbxTexFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx)
+        {
+            emuInstance->getGlobalConfig().SetInt("3D.GL.TextureFilter", idx);
+            updateTexFilterEnabled();
+            emit updateVideoSettings(false);
+        });
+        connect(cbxTexFilterScale, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx)
+        {
+            emuInstance->getGlobalConfig().SetInt("3D.GL.TextureFilterScale", idx == 1 ? 4 : 2);
+            emit updateVideoSettings(false);
+        });
+        connect(cbTexFilterObjects, &QCheckBox::toggled, this, [this](bool on)
+        {
+            emuInstance->getGlobalConfig().SetBool("3D.GL.TextureFilterObjectsOnly", on);
+            emit updateVideoSettings(false);
+        });
+    }
+
     if (!oldVSync)
         ui->sbVSyncInterval->setEnabled(false);
     setVsyncControlEnable(UsesGL());
@@ -138,6 +196,9 @@ void VideoSettingsDialog::on_VideoSettingsDialog_rejected()
     cfg.SetInt("3D.GL.ScaleFactor", oldGLScale);
     cfg.SetBool("3D.GL.BetterPolygons", oldGLBetterPolygons);
     cfg.SetBool("3D.GL.HiresCoordinates", oldHiresCoordinates);
+    cfg.SetInt("3D.GL.TextureFilter", oldTexFilter);
+    cfg.SetInt("3D.GL.TextureFilterScale", oldTexFilterScale);
+    cfg.SetBool("3D.GL.TextureFilterObjectsOnly", oldTexFilterObjects);
 
     emit updateVideoSettings(old_gl != UsesGL());
 
