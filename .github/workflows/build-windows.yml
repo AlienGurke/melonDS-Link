@@ -10,6 +10,7 @@ on:
       - master
 
 env:
+  CRASH_OFFSETS: ''
   MELONDS_GIT_BRANCH: ${{ github.ref }}
   MELONDS_GIT_HASH: ${{ github.sha }}
   MELONDS_BUILD_PROVIDER: GitHub Actions
@@ -53,6 +54,15 @@ jobs:
       with:
         name: melonDS-windows-${{ matrix.arch.name }}
         path: .\build\release-windows-${{ matrix.arch.name }}\melonDS.exe
+    - name: Keep the linker map (to look up crash offsets)
+      uses: actions/upload-artifact@v7
+      with:
+        name: melonDS-windows-${{ matrix.arch.name }}-map
+        path: .\build\release-windows-${{ matrix.arch.name }}\melonDS.map
+    - name: Look up crash offsets
+      if: ${{ env.CRASH_OFFSETS != '' && matrix.arch.name == 'x86_64' }}
+      shell: pwsh
+      run: python tools/lookup_map.py build/release-windows-x86_64/melonDS.map $env:CRASH_OFFSETS.Split(' ')
     - name: Save vcpkg cache
       uses: actions/cache/save@v4
       with:

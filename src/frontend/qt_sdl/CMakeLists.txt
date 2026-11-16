@@ -204,6 +204,13 @@ if (WIN32)
         target_compile_definitions(melonDS PRIVATE WIN32_PORTABLE)
     endif()
 
+    # linker map, to find out where a crash happened (melonDS Link)
+    if (CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR MSVC)
+        target_link_options(melonDS PRIVATE "-Wl,/MAP:${CMAKE_BINARY_DIR}/melonDS.map")
+    else()
+        target_link_options(melonDS PRIVATE "-Wl,-Map=${CMAKE_BINARY_DIR}/melonDS.map")
+    endif()
+
     string(REPLACE . , MELON_RC_VERSION ${melonDS_VERSION})
     configure_file("${CMAKE_SOURCE_DIR}/res/melon.rc.in" "${CMAKE_BINARY_DIR}/res/melon.rc")
     target_sources(melonDS PUBLIC "${CMAKE_BINARY_DIR}/res/melon.rc")
