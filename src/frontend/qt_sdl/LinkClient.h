@@ -81,6 +81,11 @@ public:
     bool Request(uint16_t cmd, const void* payload, uint32_t len,
                  uint16_t& status, std::vector<uint8_t>* out = nullptr);
 
+    // like Request, but returns -1 at once if the connection is busy;
+    // 1 = done, 0 = transport error
+    int TryRequest(uint16_t cmd, const void* payload, uint32_t len,
+                   uint16_t& status, std::vector<uint8_t>* out = nullptr);
+
     // convenience wrappers for later steps (saves / ROMs)
     bool Stat(const std::string& path, uint64_t& size, bool& isDir);
     bool Read(const std::string& path, uint64_t offset, uint32_t length, std::vector<uint8_t>& out);
@@ -117,6 +122,8 @@ public:
 
 private:
     void worker(std::string host);
+    bool requestLocked(uint16_t cmd, const void* payload, uint32_t len,
+                       uint16_t& status, std::vector<uint8_t>* out);
     void pushMessage(const std::string& msg);
     void closeSockets();
     void videoWorker();

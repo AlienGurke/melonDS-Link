@@ -204,6 +204,22 @@ bool Client::Request(uint16_t cmd, const void* payload, uint32_t len,
                      uint16_t& status, std::vector<uint8_t>* out)
 {
     std::lock_guard<std::mutex> lock(reqMutex);
+    return requestLocked(cmd, payload, len, status, out);
+}
+
+int Client::TryRequest(uint16_t cmd, const void* payload, uint32_t len,
+                       uint16_t& status, std::vector<uint8_t>* out)
+{
+    // the connection is busy (a save going to the 3DS, a ROM copy...):
+    // don't wait for it, the caller tries again later
+    std::unique_lock<std::mutex> lock(reqMutex, std::try_to_lock);
+    if (!lock.owns_lock()) return -1;
+    return requestLocked(cmd, payload, len, status, out) ? 1 : 0;
+}
+
+bool Client::requestLocked(uint16_t cmd, const void* payload, uint32_t len,
+                           uint16_t& status, std::vector<uint8_t>* out)
+{
     if (tcpSock == -1) return false;
     sock_t s = (sock_t)tcpSock;
 
@@ -464,7 +480,7 @@ void Client::pollEvents()
 {
     uint16_t status;
     std::vector<uint8_t> out;
-    if (!Request(LINK_CMD_POLLEVENT, nullptr, 0, status, &out) || status != LINK_OK) return;
+    if (TryRequest(LINK_CMD_POLLEVENT, nullptr, 0, status, &out) != 1 || status != LINK_OK) return;
     if (out.size() < sizeof(LinkEvent)) return;
     LinkEvent ev;
     memcpy(&ev, out.data(), sizeof(ev));
@@ -603,16 +619,20 @@ void Client::worker(std::string host)
                 lastHello = t;
             }
             // asking for events doubles as keep-alive
+            // never wait for a busy connection here: this loop also reads the
+            // input of the 3DS, which must keep flowing (e.g. while a save is
+            // being uploaded - the game would otherwise freeze for that time)
             if (t - lastPing >= 250)
             {
                 uint16_t st;
-                if (!Request(LINK_CMD_PING, nullptr, 0, st)) break;
-                pollEvents();
+                int r = TryRequest(LINK_CMD_PING, nullptr, 0, st);
+                if (r == 0) break;
+                if (r == 1) pollEvents();
                 lastPing = t;
             }
             {
-                std::lock_guard<std::mutex> lock(reqMutex);
-                if (tcpSock == -1) break;
+                std::unique_lock<std::mutex> lock(reqMutex, std::try_to_lock);
+                if (lock.owns_lock() && tcpSock == -1) break;
             }
 
             if (!waitSock(us, 0, 50)) continue;

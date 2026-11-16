@@ -557,7 +557,15 @@ void Session::uploader()
         // the backup always works, even without a connection
         if (!announcedRetry) WriteBackup(game, data.data(), (uint32_t)data.size());
 
+        auto u0 = std::chrono::steady_clock::now();
         bool ok = uploadNow(remote, data);
+        {
+            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - u0).count();
+            char line[160];
+            snprintf(line, sizeof(line), "Spielstand %s: %s in %.1f s (%s)", ok ? "auf den 3DS geschrieben" : "Upload fehlgeschlagen",
+                     human(data.size()).c_str(), secs, game.c_str());
+            Log(line);
+        }
         if (ok)
         {
             Link::Get().PostMessage("3DS Link: Spielstand auf dem 3DS gesichert");
