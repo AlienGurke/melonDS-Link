@@ -26,7 +26,15 @@ def main():
             base = addr
     syms.sort()
     if not syms:
-        print("no symbols parsed"); return
+        print("no symbols parsed; first lines of the map:")
+        for i, line in enumerate(open(path, errors="replace")):
+            if i >= 60: break
+            print(repr(line.rstrip()))
+        lines = open(path, errors="replace").read().splitlines()
+        print("... lines around the middle:")
+        for line in lines[len(lines)//2:len(lines)//2+25]:
+            print(repr(line))
+        return
     imagebase = 0x140000000 if base >= 0x140000000 else (0x400000 if base >= 0x400000 else 0)
     print("image base guess: 0x%x, %d entries" % (imagebase, len(syms)))
     for t in targets:
