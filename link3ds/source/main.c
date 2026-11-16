@@ -1,9 +1,11 @@
 /*
     melonDS Link - 3DS side
 
-    Turns the 3DS into a controller (buttons + touch) for melonDS on the PC
-    and gives melonDS access to files on the SD card (saves, ROMs).
+    Turns the 3DS into a controller (buttons + touch) for melonDS on the PC,
+    shows the DS bottom screen streamed from the PC, and gives melonDS
+    access to files on the SD card (saves, ROMs).
 
+    C-Stick up: switch between original size (1:1) and zoom (full screen).
     Hold SELECT + START for about one second to quit.
 */
 
@@ -321,9 +323,199 @@ static void serverThread(void* arg)
 }
 
 /* ------------------------------------------------------------------ */
-/* bottom screen drawing (framebuffer is 240x320, rotated, BGR8)       */
+/* DS bottom screen image (filled by the video thread)                 */
 
-static void fillRect(u8* fb, int x0, int y0, int w, int h, u8 r, u8 g, u8 b)
+static u16 g_dsImage[192 * 256];          /* RGB565, row-major */
+static volatile u32 g_videoFrames = 0;    /* bumps on every received packet */
+static volatile u64 g_lastVideoTime = 0;
+static volatile bool g_zoom = false;
+static int g_videoFd = -1;
+
+static void videoThread(void* arg)
+{
+    (void)arg;
+    static u8 buf[2048];
+    while (g_running)
+    {
+        ssize_t n = recvfrom(g_videoFd, buf, sizeof(buf), 0, NULL, NULL);
+        if (n <= 0)
+        {
+            svcSleepThread(1000000); /* 1 ms */
+            continue;
+        }
+        if ((size_t)n < sizeof(LinkFramePacket)) continue;
+        LinkFramePacket fp;
+        memcpy(&fp, buf, sizeof(fp));
+        if (fp.magic != LINK_FRAME_MAGIC) continue;
+
+        const u8* p = buf + sizeof(fp);
+        const u8* end = buf + n;
+        for (u32 e = 0; e < fp.entryCount; e++)
+        {
+            if (p + 2 > end) break;
+            u16 idx;
+            memcpy(&idx, p, 2);
+            p += 2;
+            bool solid = (idx & LINK_TILE_SOLID) != 0;
+            idx &= ~LINK_TILE_SOLID;
+            if (idx >= LINK_TILE_COUNT) break;
+            int tx = (idx % LINK_TILES_X) * 8;
+            int ty = (idx / LINK_TILES_X) * 8;
+            if (solid)
+            {
+                if (p + 2 > end) break;
+                u16 c;
+                memcpy(&c, p, 2);
+                p += 2;
+                for (int y = 0; y < 8; y++)
+                    for (int x = 0; x < 8; x++)
+                        g_dsImage[(ty + y) * 256 + tx + x] = c;
+            }
+            else
+            {
+                if (p + 128 > end) break;
+                for (int y = 0; y < 8; y++)
+                    memcpy(&g_dsImage[(ty + y) * 256 + tx], p + y * 16, 16);
+                p += 128;
+            }
+        }
+        g_videoFrames++;
+        g_lastVideoTime = osGetTime();
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* input thread: samples HID every 4 ms and sends it straight away     */
+
+typedef struct
+{
+    u32 keys;
+    touchPosition touch;
+    bool dsTouch;
+    u16 dsX, dsY;
+    bool quit;
+    bool haveUdpPeer;
+} InputState;
+
+static InputState g_input;    /* snapshot for the UI, guarded by g_lock */
+static int g_udpFd = -1;
+
+static bool mapTouch(u16 px, u16 py, bool zoom, u16* dx, u16* dy)
+{
+    if (zoom)
+    {
+        /* 320x240 -> 256x192 (factor 0.8) */
+        int x = px * 4 / 5, y = py * 4 / 5;
+        if (x > 255) x = 255;
+        if (y > 191) y = 191;
+        *dx = (u16)x;
+        *dy = (u16)y;
+        return true;
+    }
+    int x = (int)px - LINK_DS_OFFSET_X, y = (int)py - LINK_DS_OFFSET_Y;
+    if (x < 0 || x >= 256 || y < 0 || y >= 192) return false;
+    *dx = (u16)x;
+    *dy = (u16)y;
+    return true;
+}
+
+static void inputThread(void* arg)
+{
+    (void)arg;
+    struct sockaddr_in peer;
+    bool havePeer = false;
+    u64 lastHello = 0;
+    u32 packetId = 0;
+    int quitHold = 0;
+    bool cstickUpWas = false;
+
+    while (g_running)
+    {
+        u64 start = osGetTime();
+
+        hidScanInput();
+        u32 held = hidKeysHeld();
+
+        /* SELECT + START for ~1 s quits */
+        if ((held & KEY_SELECT) && (held & KEY_START)) quitHold++;
+        else quitHold = 0;
+
+        /* C-stick up toggles zoom */
+        bool cup = (held & KEY_CSTICK_UP) != 0;
+        if (cup && !cstickUpWas) g_zoom = !g_zoom;
+        cstickUpWas = cup;
+
+        /* HELO from the PC (also keep-alive) */
+        for (;;)
+        {
+            uint32_t msg = 0;
+            struct sockaddr_in from;
+            socklen_t flen = sizeof(from);
+            ssize_t n = recvfrom(g_udpFd, &msg, sizeof(msg), 0, (struct sockaddr*)&from, &flen);
+            if (n <= 0) break;
+            if (n == sizeof(msg) && msg == LINK_UDP_HELLO)
+            {
+                peer = from;
+                havePeer = true;
+                lastHello = osGetTime();
+            }
+        }
+        if (havePeer && osGetTime() - lastHello > 5000) havePeer = false;
+
+        touchPosition touch;
+        circlePosition cpad, cstick;
+        hidTouchRead(&touch);
+        hidCircleRead(&cpad);
+        irrstCstickRead(&cstick);
+
+        u16 dsX = 0, dsY = 0;
+        bool dsTouch = (held & KEY_TOUCH) && mapTouch(touch.px, touch.py, g_zoom, &dsX, &dsY);
+
+        if (havePeer)
+        {
+            LinkInputPacket p;
+            memset(&p, 0, sizeof(p));
+            p.magic = LINK_MAGIC;
+            p.id = packetId++;
+            p.keys = held;
+            p.cpadX = cpad.dx;
+            p.cpadY = cpad.dy;
+            p.touchX = touch.px;
+            p.touchY = touch.py;
+            p.cstickX = cstick.dx;
+            p.cstickY = cstick.dy;
+            p.dsTouchX = dsX;
+            p.dsTouchY = dsY;
+            p.flags = (dsTouch ? LINK_INPUT_DSTOUCH : 0) | (g_zoom ? LINK_INPUT_ZOOM : 0);
+            sendto(g_udpFd, &p, sizeof(p), 0, (struct sockaddr*)&peer, sizeof(peer));
+        }
+
+        LightLock_Lock(&g_lock);
+        g_input.keys = held;
+        g_input.touch = touch;
+        g_input.dsTouch = dsTouch;
+        g_input.dsX = dsX;
+        g_input.dsY = dsY;
+        g_input.quit = quitHold > 250;   /* 250 x 4 ms */
+        g_input.haveUdpPeer = havePeer;
+        LightLock_Unlock(&g_lock);
+
+        u64 el = osGetTime() - start;
+        if (el < 4) svcSleepThread((s64)(4 - el) * 1000000LL);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* bottom screen drawing (framebuffer is 240x320, rotated, RGB565)     */
+
+#define RGB565(r, g, b) (u16)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3))
+
+static inline void putPx(u16* fb, int x, int y, u16 c)
+{
+    fb[x * 240 + (239 - y)] = c;
+}
+
+static void fillRect(u16* fb, int x0, int y0, int w, int h, u16 c)
 {
     for (int x = x0; x < x0 + w; x++)
     {
@@ -331,26 +523,47 @@ static void fillRect(u8* fb, int x0, int y0, int w, int h, u8 r, u8 g, u8 b)
         for (int y = y0; y < y0 + h; y++)
         {
             if (y < 0 || y >= 240) continue;
-            u8* p = fb + ((x * 240) + (239 - y)) * 3;
-            p[0] = b; p[1] = g; p[2] = r;
+            putPx(fb, x, y, c);
         }
     }
 }
 
-static void drawBottomIdle(void)
+static void drawBottom(bool haveVideo, bool zoom, bool touching, int tx, int ty)
 {
-    u8* fb = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-    fillRect(fb, 0, 0, 320, 240, 0x10, 0x10, 0x14);
-    /* DS touch area outline */
-    fillRect(fb, LINK_DS_OFFSET_X - 2, LINK_DS_OFFSET_Y - 2, 260, 196, 0x50, 0x50, 0x60);
-    fillRect(fb, LINK_DS_OFFSET_X, LINK_DS_OFFSET_Y, 256, 192, 0x22, 0x22, 0x2A);
-    gfxFlushBuffers();
-}
+    u16* fb = (u16*)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
+    const u16 bg = RGB565(0x10, 0x10, 0x14);
+    const u16 frame = RGB565(0x50, 0x50, 0x60);
+    const u16 empty = RGB565(0x22, 0x22, 0x2A);
 
-static void drawTouchDot(int tx, int ty, bool on)
-{
-    u8* fb = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-    if (on) fillRect(fb, tx - 2, ty - 2, 5, 5, 0xE0, 0x60, 0x60);
+    if (zoom)
+    {
+        /* 256x192 -> 320x240, nearest neighbour; walk the rotated fb linearly */
+        for (int x = 0; x < 320; x++)
+        {
+            int sx = x * 4 / 5;
+            u16* col = fb + x * 240;
+            for (int y = 0; y < 240; y++)
+            {
+                int sy = y * 4 / 5;
+                col[239 - y] = haveVideo ? g_dsImage[sy * 256 + sx] : empty;
+            }
+        }
+    }
+    else
+    {
+        fillRect(fb, 0, 0, 320, 240, bg);
+        fillRect(fb, LINK_DS_OFFSET_X - 2, LINK_DS_OFFSET_Y - 2, 260, 196, frame);
+        for (int x = 0; x < 256; x++)
+        {
+            u16* col = fb + (x + LINK_DS_OFFSET_X) * 240;
+            for (int y = 0; y < 192; y++)
+                col[239 - (y + LINK_DS_OFFSET_Y)] = haveVideo ? g_dsImage[y * 256 + x] : empty;
+        }
+    }
+
+    /* without a picture, show where the finger is */
+    if (!haveVideo && touching)
+        fillRect(fb, tx - 2, ty - 2, 5, 5, RGB565(0xE0, 0x60, 0x60));
 }
 
 /* ------------------------------------------------------------------ */
@@ -360,10 +573,12 @@ int main(int argc, char** argv)
     (void)argc; (void)argv;
 
     gfxInitDefault();
-    gfxSetDoubleBuffering(GFX_BOTTOM, false);
+    gfxSetScreenFormat(GFX_BOTTOM, GSP_RGB565_OES);
+    gfxSetDoubleBuffering(GFX_BOTTOM, true);
     PrintConsole top;
     consoleInit(GFX_TOP, &top);
     osSetSpeedupEnable(true);
+    irrstInit();   /* C-stick / ZL / ZR on New 3DS */
     LightLock_Init(&g_lock);
 
     printf("\x1b[1;1H\x1b[36mmelonDS Link\x1b[0m  (Protokoll v%u)\n\n", (unsigned)LINK_VERSION);
@@ -381,6 +596,7 @@ int main(int argc, char** argv)
             if (hidKeysDown() & KEY_START) break;
             gspWaitForVBlank();
         }
+        irrstExit();
         gfxExit();
         return 0;
     }
@@ -388,102 +604,63 @@ int main(int argc, char** argv)
     struct in_addr ip;
     ip.s_addr = gethostid();
 
-    /* TCP listen socket */
-    g_listenFd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    /* TCP listen socket */
+    g_listenFd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     addr.sin_port = htons(LINK_TCP_PORT);
     bind(g_listenFd, (struct sockaddr*)&addr, sizeof(addr));
     listen(g_listenFd, 1);
     fcntl(g_listenFd, F_SETFL, fcntl(g_listenFd, F_GETFL, 0) | O_NONBLOCK);
 
     /* UDP input socket */
-    int udpFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    g_udpFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     addr.sin_port = htons(LINK_UDP_PORT);
-    bind(udpFd, (struct sockaddr*)&addr, sizeof(addr));
-    fcntl(udpFd, F_SETFL, fcntl(udpFd, F_GETFL, 0) | O_NONBLOCK);
+    bind(g_udpFd, (struct sockaddr*)&addr, sizeof(addr));
+    fcntl(g_udpFd, F_SETFL, fcntl(g_udpFd, F_GETFL, 0) | O_NONBLOCK);
+
+    /* UDP video socket */
+    g_videoFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    addr.sin_port = htons(LINK_VIDEO_PORT);
+    bind(g_videoFd, (struct sockaddr*)&addr, sizeof(addr));
+    fcntl(g_videoFd, F_SETFL, fcntl(g_videoFd, F_GETFL, 0) | O_NONBLOCK);
 
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     Thread srv = threadCreate(serverThread, NULL, 0x4000, prio + 1, -2, false);
+    Thread inp = threadCreate(inputThread, NULL, 0x4000, prio - 1, -2, false);
+    Thread vid = threadCreate(videoThread, NULL, 0x4000, prio, -2, false);
 
-    drawBottomIdle();
-
-    struct sockaddr_in udpPeer;
-    bool haveUdpPeer = false;
-    u64 lastHello = 0;
-    uint32_t packetId = 0;
-    int quitHold = 0;
-    bool lastTouch = false;
-    int lastTx = 0, lastTy = 0;
+    u32 lastVideoFrames = (u32)-1;
+    bool lastZoom = !g_zoom, lastHaveVideo = true;
+    int redrawBoth = 2;
 
     while (aptMainLoop() && g_running)
     {
-        hidScanInput();
-        u32 held = hidKeysHeld();
+        InputState in;
+        LightLock_Lock(&g_lock);
+        in = g_input;
+        LightLock_Unlock(&g_lock);
+        if (in.quit) break;
 
-        if ((held & KEY_SELECT) && (held & KEY_START))
+        bool haveVideo = g_lastVideoTime != 0 && osGetTime() - g_lastVideoTime < 3000;
+        bool zoom = g_zoom;
+
+        /* redraw when something changed; both buffers need it (double buffering) */
+        if (g_videoFrames != lastVideoFrames || zoom != lastZoom || haveVideo != lastHaveVideo ||
+            (!haveVideo && (in.keys & KEY_TOUCH)))
+            redrawBoth = 2;
+        lastVideoFrames = g_videoFrames;
+        lastZoom = zoom;
+        lastHaveVideo = haveVideo;
+        if (redrawBoth > 0)
         {
-            if (++quitHold > 60) break;
+            drawBottom(haveVideo, zoom, (in.keys & KEY_TOUCH) != 0, in.touch.px, in.touch.py);
+            redrawBoth--;
         }
-        else quitHold = 0;
-
-        /* UDP: accept HELO from the PC (also serves as keep-alive) */
-        for (;;)
-        {
-            uint32_t msg = 0;
-            struct sockaddr_in from;
-            socklen_t flen = sizeof(from);
-            ssize_t n = recvfrom(udpFd, &msg, sizeof(msg), 0, (struct sockaddr*)&from, &flen);
-            if (n <= 0) break;
-            if (n == sizeof(msg) && msg == LINK_UDP_HELLO)
-            {
-                udpPeer = from;
-                haveUdpPeer = true;
-                lastHello = osGetTime();
-            }
-        }
-        if (haveUdpPeer && osGetTime() - lastHello > 5000)
-            haveUdpPeer = false;
-
-        touchPosition touch;
-        circlePosition cpad, cstick;
-        hidTouchRead(&touch);
-        hidCircleRead(&cpad);
-        irrstCstickRead(&cstick);
-
-        if (haveUdpPeer)
-        {
-            LinkInputPacket p;
-            memset(&p, 0, sizeof(p));
-            p.magic = LINK_MAGIC;
-            p.id = packetId++;
-            p.keys = held;
-            p.cpadX = cpad.dx;
-            p.cpadY = cpad.dy;
-            p.touchX = touch.px;
-            p.touchY = touch.py;
-            p.cstickX = cstick.dx;
-            p.cstickY = cstick.dy;
-            sendto(udpFd, &p, sizeof(p), 0, (struct sockaddr*)&udpPeer, sizeof(udpPeer));
-        }
-
-        /* touch feedback on the bottom screen */
-        bool touching = (held & KEY_TOUCH) != 0;
-        if (lastTouch && (!touching || touch.px != lastTx || touch.py != lastTy))
-        {
-            u8* fb = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-            bool inside = lastTx - 2 >= LINK_DS_OFFSET_X && lastTx + 2 < LINK_DS_OFFSET_X + 256 &&
-                          lastTy - 2 >= LINK_DS_OFFSET_Y && lastTy + 2 < LINK_DS_OFFSET_Y + 192;
-            if (inside) fillRect(fb, lastTx - 2, lastTy - 2, 5, 5, 0x22, 0x22, 0x2A);
-            else drawBottomIdle();
-        }
-        drawTouchDot(touch.px, touch.py, touching);
-        lastTouch = touching;
-        lastTx = touch.px;
-        lastTy = touch.py;
 
         /* top screen status */
         char status[128], peer[32];
@@ -496,13 +673,17 @@ int main(int argc, char** argv)
         printf("\x1b[5;1HPC (Daten):   %s\x1b[K\n",
                g_tcpConnected ? "\x1b[32mverbunden\x1b[0m" : "\x1b[90mwartet...\x1b[0m");
         printf("\x1b[6;1HSteuerung:    %s\x1b[K\n",
-               haveUdpPeer ? "\x1b[32maktiv\x1b[0m" : "\x1b[90mwartet...\x1b[0m");
-        if (g_tcpConnected) printf("\x1b[7;1HPC-Adresse:   %s\x1b[K\n", peer);
-        else printf("\x1b[7;1H\x1b[K\n");
-        printf("\x1b[9;1H%s\x1b[K\n", status);
+               in.haveUdpPeer ? "\x1b[32maktiv\x1b[0m" : "\x1b[90mwartet...\x1b[0m");
+        printf("\x1b[7;1HBild:         %s\x1b[K\n",
+               haveVideo ? "\x1b[32mempfangen\x1b[0m" : "\x1b[90mkein Bild\x1b[0m");
+        printf("\x1b[8;1HAnzeige:      %s\x1b[K\n", zoom ? "Vergroessert" : "Original (1:1)");
+        if (g_tcpConnected) printf("\x1b[9;1HPC-Adresse:   %s\x1b[K\n", peer);
+        else printf("\x1b[9;1H\x1b[K\n");
+        printf("\x1b[11;1H%s\x1b[K\n", status);
 
-        printf("\x1b[26;1H\x1b[90mIn melonDS: Link > Mit 3DS verbinden\n");
+        printf("\x1b[25;1H\x1b[90mIn melonDS: 3DS Link > Mit 3DS verbinden\n");
         printf("und diese IP eingeben.\n\n");
+        printf("C-Stick hoch = Original / Vergroessert\n");
         printf("SELECT + START halten = Beenden\x1b[0m");
 
         gfxFlushBuffers();
@@ -512,10 +693,16 @@ int main(int argc, char** argv)
 
     g_running = false;
     close(g_listenFd);
-    close(udpFd);
+    threadJoin(inp, U64_MAX);
+    threadJoin(vid, U64_MAX);
     threadJoin(srv, U64_MAX);
+    threadFree(inp);
+    threadFree(vid);
     threadFree(srv);
+    close(g_udpFd);
+    close(g_videoFd);
     socExit();
+    irrstExit();
     gfxExit();
     return 0;
 }

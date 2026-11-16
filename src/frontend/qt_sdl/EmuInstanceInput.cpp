@@ -17,6 +17,7 @@
 */
 
 #include <QKeyEvent>
+#include <algorithm>
 #include <SDL2/SDL.h>
 
 #include "Platform.h"
@@ -477,16 +478,12 @@ void EmuInstance::inputProcess()
             if (in.keys & LINK_KEY_ZR) joyHotkeyMask |= (1 << HK_FastForward);
             if (in.keys & LINK_KEY_ZL) joyHotkeyMask |= (1 << HK_SwapScreens);
 
-            if (in.keys & LINK_KEY_TOUCH)
+            // the 3DS maps touch to DS coordinates itself (original or zoom mode)
+            if (in.flags & LINK_INPUT_DSTOUCH)
             {
-                int x = (int)in.touchX - LINK_DS_OFFSET_X;
-                int y = (int)in.touchY - LINK_DS_OFFSET_Y;
-                if (x >= 0 && x < 256 && y >= 0 && y < 192)
-                {
-                    linkTouching = true;
-                    linkTouchX = (u16)x;
-                    linkTouchY = (u16)y;
-                }
+                linkTouching = true;
+                linkTouchX = std::min<u16>(in.dsTouchX, 255);
+                linkTouchY = std::min<u16>(in.dsTouchY, 191);
             }
         }
     }

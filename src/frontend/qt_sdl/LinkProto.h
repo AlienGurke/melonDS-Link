@@ -12,6 +12,8 @@
       - UDP (LINK_UDP_PORT on the 3DS): input stream 3DS -> PC.
         The PC sends one LINK_UDP_HELLO datagram from the socket it wants
         to receive on; the 3DS then streams LinkInputPacket to that address.
+      - UDP (LINK_VIDEO_PORT on the 3DS): DS bottom screen PC -> 3DS as
+        changed 8x8 tiles (RGB565). Lost tiles heal through a rolling refresh.
 */
 
 #ifndef MELONDS_LINKPROTO_H
@@ -20,9 +22,10 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        1u
+#define LINK_VERSION        2u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
+#define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
 
 #define LINK_RESP           0x8000u
 #define LINK_MAX_PAYLOAD    (256u * 1024u)
@@ -131,8 +134,9 @@ typedef struct LINK_PACKED LinkDirEntry
 #define LINK_KEY_CPAD_UP    (1u << 30)
 #define LINK_KEY_CPAD_DOWN  (1u << 31)
 
-/* The DS bottom screen (256x192) is shown 1:1, centered, on the 3DS
-   bottom screen (320x240). Touch coordinates are sent raw (3DS space). */
+/* Original mode: the DS bottom screen (256x192) is shown 1:1, centered,
+   on the 3DS bottom screen (320x240). Zoom mode: scaled to fill 320x240
+   (same 4:3 ratio, factor 1.25). Raw touch is sent too, for reference. */
 #define LINK_DS_OFFSET_X    32
 #define LINK_DS_OFFSET_Y    24
 
@@ -144,8 +148,31 @@ typedef struct LINK_PACKED LinkInputPacket
     int16_t  cpadX, cpadY;
     uint16_t touchX, touchY;
     int16_t  cstickX, cstickY;
-    uint32_t reserved[2];
+    uint16_t dsTouchX, dsTouchY;   /* touch already mapped to DS space (256x192) */
+    uint32_t flags;                /* LINK_INPUT_* */
 } LinkInputPacket;
+
+#define LINK_INPUT_DSTOUCH  1u     /* dsTouchX/Y valid: the DS screen is being touched */
+#define LINK_INPUT_ZOOM     2u     /* 3DS shows the DS screen enlarged */
+
+/* Video: the DS bottom screen is split into 32x24 tiles of 8x8 RGB565 pixels.
+   Each entry is a u16 tile index; with LINK_TILE_SOLID set, one u16 colour
+   follows, otherwise 64 u16 pixels (row-major). */
+#define LINK_FRAME_MAGIC    0x52464D4Du /* "MDFR" */
+#define LINK_TILES_X        32
+#define LINK_TILES_Y        24
+#define LINK_TILE_COUNT     (LINK_TILES_X * LINK_TILES_Y)
+#define LINK_TILE_SOLID     0x8000u
+#define LINK_FRAME_MAX_BYTES 1400
+
+typedef struct LINK_PACKED LinkFramePacket
+{
+    uint32_t magic;
+    uint32_t frameId;
+    uint16_t entryCount;
+    uint16_t flags;
+    /* followed by entries */
+} LinkFramePacket;
 
 #if defined(_MSC_VER)
 #pragma pack(pop)

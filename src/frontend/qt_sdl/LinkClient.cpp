@@ -151,12 +151,16 @@ void Client::Connect(const std::string& host)
     stopRequested = false;
     state = State::Connecting;
     thread = std::thread(&Client::worker, this, host);
+    videoThread = std::thread(&Client::videoWorker, this);
 }
 
 void Client::Disconnect()
 {
     stopRequested = true;
+    videoCv.notify_all();
     if (thread.joinable()) thread.join();
+    if (videoThread.joinable()) videoThread.join();
+    haveVideoAddr = false;
     closeSockets();
     state = State::Disconnected;
     std::lock_guard<std::mutex> lock(inputMutex);
@@ -358,6 +362,15 @@ void Client::worker(std::string host)
             udpSock = (intptr_t)us;
         }
 
+        {
+            sockaddr_in va = tcpAddr;
+            va.sin_port = htons(LINK_VIDEO_PORT);
+            static_assert(sizeof(va) == sizeof(videoAddr), "sockaddr_in size");
+            memcpy(videoAddr, &va, sizeof(va));
+            videoResync = true;
+            haveVideoAddr = true;
+        }
+
         state = State::Connected;
         pushMessage(std::string("3DS Link: verbunden mit ") + hello.name + " (" + host + ")");
         everConnected = true;
@@ -406,9 +419,13 @@ void Client::worker(std::string host)
                 lastInput.touchY = pkt.touchY;
                 lastInput.cstickX = pkt.cstickX;
                 lastInput.cstickY = pkt.cstickY;
+                lastInput.dsTouchX = pkt.dsTouchX;
+                lastInput.dsTouchY = pkt.dsTouchY;
+                lastInput.flags = pkt.flags;
             }
         }
 
+        haveVideoAddr = false;
         closeSockets();
         {
             std::lock_guard<std::mutex> lock(inputMutex);
@@ -419,6 +436,156 @@ void Client::worker(std::string host)
     }
 
     state = State::Disconnected;
+}
+
+void Client::SubmitBottomScreen(const uint32_t* pixels, bool bgra)
+{
+    std::lock_guard<std::mutex> lock(videoMutex);
+    pendingFrame.resize(256 * 192);
+    for (int i = 0; i < 256 * 192; i++)
+    {
+        uint32_t p = pixels[i];
+        uint32_t r, g, b;
+        if (bgra) { b = p & 0xFF; g = (p >> 8) & 0xFF; r = (p >> 16) & 0xFF; }
+        else      { r = p & 0xFF; g = (p >> 8) & 0xFF; b = (p >> 16) & 0xFF; }
+        pendingFrame[i] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    }
+    framePending = true;
+    videoCv.notify_one();
+}
+
+void Client::videoWorker()
+{
+    std::vector<uint16_t> frame;
+    while (!stopRequested)
+    {
+        {
+            std::unique_lock<std::mutex> lock(videoMutex);
+            videoCv.wait_for(lock, std::chrono::milliseconds(100),
+                             [this] { return framePending || stopRequested; });
+            if (stopRequested) break;
+            if (!framePending) continue;
+            frame.swap(pendingFrame);
+            framePending = false;
+        }
+        if (!haveVideoAddr) continue;
+        sendTiles(frame);
+    }
+}
+
+void Client::sendTiles(const std::vector<uint16_t>& frame)
+{
+    // Budget per frame: ~24 KB. At 60 fps that is ~1.4 MB/s worst case, which
+    // the 3DS WiFi handles; static screens cost almost nothing. Tiles that do
+    // not fit stay "different" and are picked up on the next frame.
+    constexpr size_t kBudget = 24 * 1024;
+    constexpr int kRefreshPerFrame = 12;   // heals lost packets within ~1 s
+
+    if (frame.size() != 256 * 192) return;
+    bool resync = videoResync.exchange(false);
+    if (resync || sentFrame.size() != frame.size())
+    {
+        sentFrame.assign(frame.size(), 0);
+        // mark all tiles as changed: flip one pixel per tile in the reference
+        for (int t = 0; t < LINK_TILE_COUNT; t++)
+        {
+            int base = (t / LINK_TILES_X) * 8 * 256 + (t % LINK_TILES_X) * 8;
+            sentFrame[base] = (uint16_t)~frame[base];
+        }
+    }
+
+    auto tileBase = [](int t) { return (t / LINK_TILES_X) * 8 * 256 + (t % LINK_TILES_X) * 8; };
+    auto tileChanged = [&](int t)
+    {
+        int base = tileBase(t);
+        for (int y = 0; y < 8; y++)
+            if (memcmp(&frame[base + y * 256], &sentFrame[base + y * 256], 16) != 0) return true;
+        return false;
+    };
+
+    // which tiles to send: rolling refresh first, then changed tiles
+    std::vector<int> order;
+    order.reserve(LINK_TILE_COUNT);
+    std::vector<uint8_t> picked(LINK_TILE_COUNT, 0);
+    for (int i = 0; i < kRefreshPerFrame; i++)
+    {
+        int t = (int)((refreshCursor + i) % LINK_TILE_COUNT);
+        picked[t] = 1;
+        order.push_back(t);
+    }
+    refreshCursor = (refreshCursor + kRefreshPerFrame) % LINK_TILE_COUNT;
+    for (int i = 0; i < LINK_TILE_COUNT; i++)
+    {
+        int t = (int)((scanStart + i) % LINK_TILE_COUNT);
+        if (!picked[t] && tileChanged(t)) order.push_back(t);
+    }
+
+    sockaddr_in to;
+    memcpy(&to, videoAddr, sizeof(to));
+
+    uint8_t pkt[LINK_FRAME_MAX_BYTES];
+    LinkFramePacket hdr = {};
+    hdr.magic = LINK_FRAME_MAGIC;
+    hdr.frameId = ++videoFrameId;
+    size_t used = sizeof(hdr);
+    size_t total = 0;
+    uint16_t entries = 0;
+
+    std::lock_guard<std::mutex> lock(reqMutex);   // keeps udpSock alive while sending
+    if (udpSock == -1) return;
+    sock_t us = (sock_t)udpSock;
+
+    auto flush = [&]()
+    {
+        if (!entries) return;
+        hdr.entryCount = entries;
+        memcpy(pkt, &hdr, sizeof(hdr));
+        sendto(us, (const char*)pkt, (int)used, 0, (sockaddr*)&to, sizeof(to));
+        total += used;
+        used = sizeof(hdr);
+        entries = 0;
+    };
+
+    size_t sentCount = 0;
+    int lastScanned = -1;
+    for (size_t k = 0; k < order.size(); k++)
+    {
+        int t = order[k];
+        int base = tileBase(t);
+        uint16_t first = frame[base];
+        bool solid = true;
+        for (int y = 0; y < 8 && solid; y++)
+            for (int x = 0; x < 8; x++)
+                if (frame[base + y * 256 + x] != first) { solid = false; break; }
+
+        size_t need = 2 + (solid ? 2 : 128);
+        if (total + used + need > kBudget && k >= (size_t)kRefreshPerFrame) break;
+        if (used + need > LINK_FRAME_MAX_BYTES) flush();
+
+        uint16_t idx = (uint16_t)t | (solid ? LINK_TILE_SOLID : 0);
+        memcpy(pkt + used, &idx, 2);
+        used += 2;
+        if (solid)
+        {
+            memcpy(pkt + used, &first, 2);
+            used += 2;
+        }
+        else
+        {
+            for (int y = 0; y < 8; y++)
+                memcpy(pkt + used + y * 16, &frame[base + y * 256], 16);
+            used += 128;
+        }
+        entries++;
+        for (int y = 0; y < 8; y++)
+            memcpy(&sentFrame[base + y * 256], &frame[base + y * 256], 16);
+        sentCount++;
+        if (k >= (size_t)kRefreshPerFrame) lastScanned = t;
+    }
+    flush();
+
+    // continue after the last changed tile next time, so no area starves
+    if (lastScanned >= 0) scanStart = (uint32_t)((lastScanned + 1) % LINK_TILE_COUNT);
 }
 
 Client& Get()

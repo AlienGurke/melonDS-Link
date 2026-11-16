@@ -25,6 +25,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <chrono>
 
 #include <SDL2/SDL.h>
 
@@ -58,6 +59,68 @@
 
 using namespace melonDS;
 
+
+// melonDS Link: hand the DS bottom screen (256x192) to the 3DS sender.
+// Software renderer: RAM framebuffer. OpenGL renderer: scale the bottom layer
+// of the output texture down to 256x192 on the GPU and read it back.
+static void linkCaptureBottomScreen(melonDS::NDS* nds)
+{
+    void* top = nullptr;
+    void* bottom = nullptr;
+    if (nds->GPU.GetFramebuffers(&top, &bottom))
+    {
+        if (bottom) Link::Get().SubmitBottomScreen((const uint32_t*)bottom, true);
+        return;
+    }
+#ifdef OGLRENDERER_ENABLED
+    if (!top) return;
+    GLuint tex = *(GLuint*)top;
+
+    static GLuint readFb = 0, drawFb = 0, rb = 0;
+    static std::vector<uint32_t> pixels(256 * 192);
+    if (!readFb)
+    {
+        glGenFramebuffers(1, &readFb);
+        glGenFramebuffers(1, &drawFb);
+        glGenRenderbuffers(1, &rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, rb);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 256, 192);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    }
+
+    GLint prevRead = 0, prevDraw = 0, prevTex = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDraw);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &prevTex);
+
+    GLint w = 256, h = 192;
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_HEIGHT, &h);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, prevTex);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, readFb);
+    glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 0, 1); // layer 1 = bottom
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFb);
+    glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+    glBlitFramebuffer(0, 0, w, h, 0, 0, 256, 192, GL_COLOR_BUFFER_BIT,
+                      (w == 256 && h == 192) ? GL_NEAREST : GL_LINEAR);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, drawFb);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
+
+    // texture row 0 is DS line 0 (same as the software path), so no flip
+    Link::Get().SubmitBottomScreen(pixels.data(), false);
+#endif
+}
 
 EmuThread::EmuThread(EmuInstance* inst, QObject* parent) : QThread(parent)
 {
@@ -319,6 +382,18 @@ void EmuThread::run()
             else
             {
                 nlines = emuInstance->nds->RunFrame();
+            }
+
+            // melonDS Link: send the bottom screen to the 3DS, at most ~60 times a second
+            if (emuInstance->instanceID == 0 && Link::Get().WantsVideo())
+            {
+                static auto lastLinkFrame = std::chrono::steady_clock::time_point();
+                auto now = std::chrono::steady_clock::now();
+                if (now - lastLinkFrame >= std::chrono::microseconds(16000))
+                {
+                    lastLinkFrame = now;
+                    linkCaptureBottomScreen(emuInstance->nds);
+                }
             }
 
             if (emuInstance->ndsSave)

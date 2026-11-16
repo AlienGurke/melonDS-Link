@@ -37,6 +37,8 @@ struct InputSnapshot
     int16_t cpadX = 0, cpadY = 0;
     uint16_t touchX = 0, touchY = 0;
     int16_t cstickX = 0, cstickY = 0;
+    uint16_t dsTouchX = 0, dsTouchY = 0;
+    uint32_t flags = 0;        // LINK_INPUT_*
 };
 
 class Client
@@ -54,6 +56,12 @@ public:
 
     // latest input from the 3DS; invalid if nothing arrived for 500 ms
     InputSnapshot GetInput();
+
+    // DS bottom screen for the 3DS. `pixels` is 256x192, 32 bit per pixel;
+    // bgra=true: bytes B,G,R,A (software renderer), false: R,G,B,A (OpenGL).
+    // Cheap: converts and hands the frame to the sender thread.
+    void SubmitBottomScreen(const uint32_t* pixels, bool bgra);
+    bool WantsVideo() const { return state.load() == State::Connected; }
 
     // messages for the on-screen display (connected, lost, ...)
     bool PopMessage(std::string& msg);
@@ -73,6 +81,8 @@ private:
     void worker(std::string host);
     void pushMessage(const std::string& msg);
     void closeSockets();
+    void videoWorker();
+    void sendTiles(const std::vector<uint16_t>& frame);
 
     std::atomic<State> state { State::Disconnected };
     std::atomic<bool> stopRequested { false };
@@ -88,6 +98,20 @@ private:
 
     std::mutex msgMutex;
     std::deque<std::string> messages;
+
+    // video: latest frame waiting to be sent + what the 3DS should have
+    std::mutex videoMutex;
+    std::condition_variable videoCv;
+    std::vector<uint16_t> pendingFrame;     // 256x192 RGB565
+    bool framePending = false;
+    std::atomic<bool> videoResync { true };  // resend everything (new connection)
+    std::thread videoThread;
+    std::vector<uint16_t> sentFrame;        // what was last sent per pixel
+    uint32_t videoFrameId = 0;
+    uint32_t refreshCursor = 0;
+    uint32_t scanStart = 0;
+    uint8_t videoAddr[16] = {};             // sockaddr_in of the 3DS video port
+    std::atomic<bool> haveVideoAddr { false };
 
     std::mutex reqMutex;   // serialises Request()
     intptr_t tcpSock = -1;
