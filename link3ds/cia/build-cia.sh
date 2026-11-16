@@ -12,7 +12,9 @@ mkdir -p "$TOOLS"
 export PATH="$TOOLS:$PATH"
 
 fetch_latest() { # repo, grep pattern for the asset URL
-    curl -fsSL "https://api.github.com/repos/$1/releases/latest" \
+    # with a token (GitHub Actions) the API does not rate-limit us
+    if [ -n "${GH_TOKEN:-}" ]; then AUTH="Authorization: Bearer $GH_TOKEN"; else AUTH="X-No-Auth: 1"; fi
+    curl -fsSL -H "$AUTH" "https://api.github.com/repos/$1/releases/latest" \
         | grep -o '"browser_download_url": *"[^"]*"' | cut -d'"' -f4 | grep -i -E "$2" | head -n1
 }
 

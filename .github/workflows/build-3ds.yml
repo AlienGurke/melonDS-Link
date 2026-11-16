@@ -44,7 +44,14 @@ jobs:
       with:
         name: link3ds-build
         path: link3ds
+    - name: Cache makerom/bannertool
+      uses: actions/cache@v4
+      with:
+        path: link3ds/cia/.tools
+        key: cia-tools-v1
     - name: Build .cia (install with FBI for a Home Menu icon)
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: sh link3ds/cia/build-cia.sh link3ds/melonDS-Link.elf link3ds/melonDS-Link.cia
     - uses: actions/upload-artifact@v7
       with:
