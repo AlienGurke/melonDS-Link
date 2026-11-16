@@ -54,6 +54,11 @@ static void setStatusText(const char* s)
    timeout) therefore stalls every other thread's socket calls - the video
    receiver and the input sender included. So we never block inside the socket
    service: we try, and if it would block, we sleep in our own thread. */
+/* measurements for the transfer statistics (see streamFile) */
+static volatile u64 g_statSendSleeps;   /* 0.5 ms sleeps because the WiFi send buffer was full */
+static volatile u64 g_statReadTicks, g_statReadBytes;   /* SD card */
+static volatile u64 g_statPackTicks, g_statPackBytes;   /* LZ4 */
+
 static bool sendAll(int fd, const void* buf, size_t len)
 {
     const uint8_t* p = (const uint8_t*)buf;
@@ -67,6 +72,7 @@ static bool sendAll(int fd, const void* buf, size_t len)
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
                 if (!g_running) return false;
+                g_statSendSleeps++;
                 svcSleepThread(500000);   /* 0.5 ms, outside the socket service */
                 continue;
             }
@@ -334,6 +340,7 @@ static LZ4_stream_t g_lz4State;          /* ~16 KB: must not live on a thread st
 
 /* transfer info for the top screen (guarded by g_lock) */
 static char g_xferInfo[64] = "";
+static char g_xferInfo2[64] = "";
 
 /* one value repeated over the whole block (cartridge padding)? */
 static bool isUniform(const u8* p, u32 n)
@@ -355,7 +362,10 @@ static void streamReader(void* arg)
         if (g_streamState[i] != 0) { svcSleepThread(200000); continue; }   /* wait for the sender */
         if (g_streamLeft == 0) { g_streamState[i] = 2; break; }
         u32 want = g_streamLeft > STREAM_CHUNK ? STREAM_CHUNK : (u32)g_streamLeft;
+        u64 r0 = svcGetSystemTick();
         size_t got = fread(g_streamBuf[i], 1, want, g_streamFile);
+        g_statReadTicks += svcGetSystemTick() - r0;
+        g_statReadBytes += got;
         if (got != want) { g_streamState[i] = 2; g_streamLen[i] = 0; break; }
         g_streamLen[i] = want;
 
@@ -371,8 +381,11 @@ static void streamReader(void* arg)
             }
             else if (g_streamCompress)
             {
+                u64 p0 = svcGetSystemTick();
                 int enc = LZ4_compress_fast_extState(&g_lz4State, (const char*)g_streamBuf[i], (char*)g_streamEnc[i],
                                                      (int)want, LZ4_compressBound(STREAM_CHUNK), 1);
+                g_statPackTicks += svcGetSystemTick() - p0;
+                g_statPackBytes += want;
                 if (enc > 0 && (u32)enc < want - want / 32)
                 {
                     b->mode = LINK_BLOCK_LZ4;
@@ -432,6 +445,9 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     g_streamPack = compress;
     g_streamCompress = compress;
     g_senderStarved = 0;
+    g_statSendSleeps = 0;
+    g_statReadTicks = g_statReadBytes = 0;
+    g_statPackTicks = g_statPackBytes = 0;
 
     u64 len64 = length;
     if (!sendResponse(fd, h, LINK_OK, &len64, sizeof(len64))) { fclose(f); return false; }
@@ -449,7 +465,7 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     u64 sent = 0, wire = 0;
     int i = 0;
     u64 t0 = osGetTime(), lastInfo = t0;
-    u64 waitTicks = 0, blocks = 0;
+    u64 waitTicks = 0, blocks = 0, waitTotal = 0, tick0 = svcGetSystemTick();
     while (sent < length && ok && g_running)
     {
         if (g_streamState[i] == 0)
@@ -457,6 +473,7 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
             u64 w0 = svcGetSystemTick();
             svcSleepThread(200000);
             waitTicks += svcGetSystemTick() - w0;
+            waitTotal += svcGetSystemTick() - w0;
             continue;
         }
         if (g_streamState[i] == 2) { ok = false; break; }           /* SD read error */
@@ -493,6 +510,15 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
             snprintf(g_xferInfo, sizeof(g_xferInfo), "WLAN %lu KB/s, Daten %lu KB/s, LZ4 %s",
                      (unsigned long)(wire / secs1000), (unsigned long)(sent / secs1000),
                      !compress ? "-" : g_streamCompress ? "an" : "aus (CPU zu langsam)");
+            /* where the time goes: waiting for the reader / for the WiFi buffer,
+               and how fast the SD card and LZ4 are on their own (MB/s) */
+            u64 el = svcGetSystemTick() - tick0;
+            unsigned wPct = el ? (unsigned)(waitTotal * 100 / el) : 0;
+            unsigned fPct = secs1000 ? (unsigned)(g_statSendSleeps / 2 * 100 / secs1000) : 0;
+            double sd = g_statReadTicks ? g_statReadBytes / (g_statReadTicks / (double)SYSCLOCK_ARM11) / 1048576.0 : 0;
+            double lz = g_statPackTicks ? g_statPackBytes / (g_statPackTicks / (double)SYSCLOCK_ARM11) / 1048576.0 : 0;
+            snprintf(g_xferInfo2, sizeof(g_xferInfo2), "Wartet: Leser %u%% WLAN %u%%  SD %.1f LZ4 %.1f",
+                     wPct > 100 ? 100 : wPct, fPct > 100 ? 100 : fPct, sd, lz);
             LightLock_Unlock(&g_lock);
         }
     }
@@ -673,6 +699,35 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         if (!makeSdPath(path, sizeof(path), (const char*)payload + sizeof(req), h->len - sizeof(req)))
             return sendResponse(fd, h, LINK_ERR_DENIED, NULL, 0);
         return streamFile(fd, h, path, req.offset, req.length, h->cmd == LINK_CMD_READSTREAMZ);
+    }
+
+    case LINK_CMD_SPEEDTEST:
+    {
+        /* pure network test: data straight from RAM */
+        u32 mb = (h->len >= 4) ? *(u32*)payload : 16;
+        if (mb == 0 || mb > 256) mb = 16;
+        static u8* junk = NULL;
+        if (!junk)
+        {
+            junk = (u8*)memalign(0x1000, 0x10000);
+            if (!junk) return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
+            u32 x = 0x12345678;
+            for (int k = 0; k < 0x10000; k++) { x = x * 1664525u + 1013904223u; junk[k] = (u8)(x >> 24); }
+        }
+        u64 total = (u64)mb * 1024 * 1024;
+        if (!sendResponse(fd, h, LINK_OK, &total, sizeof(total))) return false;
+        g_statSendSleeps = 0;
+        u64 t0 = osGetTime();
+        for (u64 sent = 0; sent < total; sent += 0x10000)
+            if (!sendAll(fd, junk, 0x10000)) return false;
+        u64 ms = osGetTime() - t0;
+        LightLock_Lock(&g_lock);
+        snprintf(g_xferInfo, sizeof(g_xferInfo), "Speedtest: %lu KB/s (%lu MB in %lu.%lus)",
+                 ms ? (unsigned long)(total / ms) : 0, (unsigned long)mb, (unsigned long)(ms / 1000), (unsigned long)(ms % 1000 / 100));
+        snprintf(g_xferInfo2, sizeof(g_xferInfo2), "Wartet: WLAN-Puffer voll %lu%%",
+                 ms ? (unsigned long)(g_statSendSleeps / 2 * 100 / ms) : 0);
+        LightLock_Unlock(&g_lock);
+        return true;
     }
 
     case LINK_CMD_REPLACE:
@@ -1437,6 +1492,13 @@ int main(int argc, char** argv)
         setLine(6, "Anzeige:     %s", zoom ? "Vergroessert" : "Original (1:1)");
         setLine(7, "\x1b[90m%.49s", xi);
         setLine(8, "\x1b[33m%.49s", status);
+        {
+            char xi2[64];
+            LightLock_Lock(&g_lock);
+            snprintf(xi2, sizeof(xi2), "%s", g_xferInfo2);
+            LightLock_Unlock(&g_lock);
+            setLine(9, "\x1b[90m%.49s", xi2);
+        }
 
         /* top screen: game list or current game */
         if (g_menuOpen)

@@ -34,6 +34,7 @@
 #include <QMimeDatabase>
 #include <QFileDialog>
 #include <QInputDialog>
+#include <thread>
 #include <QPaintEvent>
 #include <QPainter>
 #include <QKeyEvent>
@@ -637,6 +638,32 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
             actLinkDisconnect = menu->addAction("Trennen");
             connect(actLinkDisconnect, &QAction::triggered, this, &MainWindow::onLinkDisconnect);
+
+            QAction* actLinkSpeed = menu->addAction("WLAN-Geschwindigkeit testen (32 MB)");
+            connect(actLinkSpeed, &QAction::triggered, this, [this]
+            {
+                if (Link::Get().GetState() != Link::State::Connected)
+                {
+                    QMessageBox::information(this, "melonDS Link", "Zuerst mit dem 3DS verbinden.");
+                    return;
+                }
+                emuInstance->osdAddMessage(0, "3DS Link: WLAN-Test laeuft (32 MB)...");
+                std::thread([this]
+                {
+                    double rate = 0;
+                    bool ok = Link::Get().SpeedTest(32, rate);
+                    QString text = ok
+                        ? QString("Reine WLAN-Geschwindigkeit vom 3DS zum PC:\n\n%1 KB/s  (%2 MB/s)\n\n"
+                                  "Zum Vergleich: ftpd/WinSCP lag bei dir bei ca. 1600 KB/s.\n"
+                                  "Die Zeile oben auf dem 3DS zeigt dieselbe Messung.")
+                              .arg((int)(rate / 1024)).arg(rate / 1048576.0, 0, 'f', 2)
+                        : QString("Test fehlgeschlagen. Ist auf dem 3DS die neueste melonDS-Link-App?");
+                    QMetaObject::invokeMethod(this, [this, text]
+                    {
+                        QMessageBox::information(this, "melonDS Link", text);
+                    }, Qt::QueuedConnection);
+                }).detach();
+            });
 
             menu->addSeparator();
             QAction* actLinkFolder = menu->addAction("Backup- und ROM-Ordner oeffnen");

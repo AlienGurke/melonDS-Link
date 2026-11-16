@@ -370,6 +370,52 @@ broken:
     return got;
 }
 
+bool Client::SpeedTest(uint32_t megabytes, double& bytesPerSec)
+{
+    bytesPerSec = 0;
+    std::lock_guard<std::mutex> lock(reqMutex);
+    if (tcpSock == -1) return false;
+    sock_t s = (sock_t)tcpSock;
+
+    LinkHeader h = {};
+    h.magic = LINK_MAGIC;
+    h.cmd = LINK_CMD_SPEEDTEST;
+    h.seq = seq++;
+    h.len = sizeof(megabytes);
+    LinkHeader resp = {};
+    uint64_t total = 0, got = 0;
+    std::vector<uint8_t> buf(1024 * 1024);
+    auto t0 = std::chrono::steady_clock::now();
+    if (!sendAll(s, &h, sizeof(h)) || !sendAll(s, &megabytes, sizeof(megabytes))) goto broken;
+    if (!recvAll(s, &resp, sizeof(resp)) || resp.magic != LINK_MAGIC || resp.seq != h.seq ||
+        resp.cmd != (LINK_CMD_SPEEDTEST | LINK_RESP))
+        goto broken;
+    if (resp.status != LINK_OK)
+    {
+        if (resp.len) { std::vector<uint8_t> junk(resp.len); recvAll(s, junk.data(), resp.len); }
+        return false;   // e.g. an older 3DS app that does not know the test
+    }
+    if (resp.len != sizeof(total) || !recvAll(s, &total, sizeof(total))) goto broken;
+    t0 = std::chrono::steady_clock::now();
+    while (got < total)
+    {
+        if (!waitSock(s, 0, 10000)) goto broken;
+        int n = recv(s, (char*)buf.data(), (int)std::min<uint64_t>(buf.size(), total - got), 0);
+        if (n <= 0) goto broken;
+        got += (uint64_t)n;
+    }
+    {
+        double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        bytesPerSec = secs > 0 ? total / secs : 0;
+    }
+    return true;
+
+broken:
+    closesock(s);
+    tcpSock = -1;
+    return false;
+}
+
 bool Client::Replace(const std::string& from, const std::string& to)
 {
     std::vector<uint8_t> req(2 + from.size() + to.size());

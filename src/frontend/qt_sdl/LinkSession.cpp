@@ -275,6 +275,16 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
         }
+        {
+            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            int isecs = (int)secs;
+            char summary[200];
+            snprintf(summary, sizeof(summary), "3DS Link: ROM kopiert in %d:%02d - Daten %s/s, WLAN %s/s, Kompression sparte %d%%",
+                     isecs / 60, isecs % 60, human((uint64_t)(size / (secs > 0 ? secs : 1))).c_str(),
+                     human((uint64_t)(wireDone / (secs > 0 ? secs : 1))).c_str(),
+                     size > 0 ? (int)(100 - wireDone * 100 / size) : 0);
+            c.PostMessage(summary);
+        }
         out.close();
         QFile::remove(q(localRom));
         if (!QFile::rename(part, q(localRom)))

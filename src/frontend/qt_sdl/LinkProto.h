@@ -52,6 +52,9 @@ enum LinkCommand
     LINK_CMD_READSTREAMZ= 12,/* like READSTREAM, but after the u64 length the
                                 data comes as LinkStreamBlock + payload pieces
                                 (LZ4-compressed, a fill byte, or raw) */
+    LINK_CMD_SPEEDTEST  = 13,/* in: u32 megabytes  out: u64 length, then that many
+                                bytes from RAM (no SD card, no compression):
+                                measures the pure network speed */
 };
 
 /* Events the 3DS has for melonDS (fetched with LINK_CMD_POLLEVENT) */

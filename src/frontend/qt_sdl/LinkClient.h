@@ -94,6 +94,10 @@ public:
                         const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok,
                         bool compressed = true);
 
+    // pure network speed test: the 3DS sends `megabytes` MB from RAM.
+    // Returns false on errors; bytesPerSec gets the measured rate.
+    bool SpeedTest(uint32_t megabytes, double& bytesPerSec);
+
     // bytes that actually went over the WiFi during the last ReadStream
     uint64_t LastStreamWireBytes() const { return lastWireBytes.load(); }
 
