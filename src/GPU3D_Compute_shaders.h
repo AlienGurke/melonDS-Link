@@ -259,8 +259,6 @@ struct Polygon
     uint Attr;
 
     float TextureLayer;
-
-    int TexUMin, TexUMax, TexVMin, TexVMax;
 };
 
 layout (std430, binding = 0) readonly buffer PolygonBuffer
@@ -1198,12 +1196,6 @@ void main()
             b = vb;
 
 #ifdef UseTexture
-            // melonDS Link: at high resolutions, pixels on polygon edges can get
-            // texture coordinates just outside of what the vertices span (the DS
-            // never samples there) and pick up a texel of the neighbouring image
-            // in the texture - thin lines along edges. Keep them inside.
-            u = clamp(u, polygon.TexUMin, max(polygon.TexUMin, polygon.TexUMax - 1));
-            v = clamp(v, polygon.TexVMin, max(polygon.TexVMin, polygon.TexVMax - 1));
             vec2 uvf = vec2(ivec2(u, v)) * vec2(1.0 / 16.0) * InvTextureSize;
 
             // TODO: if they use a capture as a texture and make it repeat, or use a nonstandard height,

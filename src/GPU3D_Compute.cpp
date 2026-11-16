@@ -717,25 +717,6 @@ void ComputeRenderer3D::RenderFrame()
 
         RenderPolygons[i].FirstXSpan = numSetupIndices;
         RenderPolygons[i].Attr = polygon->Attr;
-        {
-            s32 umin = INT32_MAX, umax = INT32_MIN, vmin = INT32_MAX, vmax = INT32_MIN;
-            for (u32 j = 0; j < nverts; j++)
-            {
-                s32 tu = polygon->Vertices[j]->TexCoords[0], tv = polygon->Vertices[j]->TexCoords[1];
-                umin = std::min(umin, tu); umax = std::max(umax, tu);
-                vmin = std::min(vmin, tv); vmax = std::max(vmax, tv);
-            }
-            if (ScaleFactor <= 1)
-            {
-                // native resolution: sample exactly like the DS (no clamping)
-                umin = vmin = INT32_MIN;
-                umax = vmax = INT32_MAX;
-            }
-            RenderPolygons[i].TexUMin = umin;
-            RenderPolygons[i].TexUMax = umax;
-            RenderPolygons[i].TexVMin = vmin;
-            RenderPolygons[i].TexVMax = vmax;
-        }
 
         bool foundVariant = false;
         if (i > 0)
