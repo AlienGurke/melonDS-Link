@@ -863,34 +863,9 @@ void ComputeRenderer3D::RenderFrame()
 
         s32 scaledPositions[10][2];
         s32 ytop = ScreenHeight, ybot = 0;
-
-        // melonDS Link: polygons that are thinner than one DS pixel with the
-        // fine coordinates (e.g. faces seen edge-on while walking), and shadow
-        // volumes, are placed exactly like on the DS. With the fine coordinates
-        // they can end up a fraction of a pixel next to where the DS has them
-        // and show as thin lines that the DS never draws.
-        bool useHires = HiresCoordinates;
-        if (useHires)
-        {
-            if (polygon->IsShadowMask || polygon->IsShadow)
-                useHires = false;
-            else
-            {
-                s32 hmin = INT32_MAX, hmax = INT32_MIN, wmin = INT32_MAX, wmax = INT32_MIN;
-                for (int k = 0; k < polygon->NumVertices; k++)
-                {
-                    s32 hx = (polygon->Vertices[k]->HiresPosition[0] * ScaleFactor) >> 4;
-                    s32 hy = (polygon->Vertices[k]->HiresPosition[1] * ScaleFactor) >> 4;
-                    hmin = std::min(hmin, hy); hmax = std::max(hmax, hy);
-                    wmin = std::min(wmin, hx); wmax = std::max(wmax, hx);
-                }
-                if (hmax - hmin < ScaleFactor || wmax - wmin < ScaleFactor) useHires = false;
-            }
-        }
-
         for (int i = 0; i < polygon->NumVertices; i++)
         {
-            if (useHires)
+            if (HiresCoordinates)
             {
                 scaledPositions[i][0] = (polygon->Vertices[i]->HiresPosition[0] * ScaleFactor) >> 4;
                 scaledPositions[i][1] = (polygon->Vertices[i]->HiresPosition[1] * ScaleFactor) >> 4;
