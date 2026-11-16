@@ -61,33 +61,4 @@ void main()
 }
 )";
 
-// melonDS Link: LCD ghosting - copies one layer of a screen texture array
-// into an accumulation texture (the mixing is done by blending)
-const char* kGhostVS = R"(#version 140
-
-smooth out vec2 fUV;
-
-void main()
-{
-    vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
-    fUV = p;
-    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-}
-)";
-
-const char* kGhostFS = R"(#version 140
-
-uniform sampler2DArray SrcTex;
-uniform float uLayer;
-
-smooth in vec2 fUV;
-
-out vec4 oColor;
-
-void main()
-{
-    oColor = vec4(texture(SrcTex, vec3(fUV, uLayer)).rgb, 1.0);
-}
-)";
-
 #endif // MAIN_SHADERS_H

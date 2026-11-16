@@ -1024,104 +1024,12 @@ void ScreenPanelGL::initOpenGL()
     glInited = true;
 }
 
-GLuint ScreenPanelGL::applyGhosting(GLuint srcTex, unsigned int frame, int winW, int winH)
-{
-    int level = ghostLevel;
-    if (level <= 0) { ghostValid = false; return srcTex; }
-
-    if (!ghostProgram)
-    {
-        OpenGL::CompileVertexFragmentProgram(ghostProgram, kGhostVS, kGhostFS, "GhostShader", {}, {{"oColor", 0}});
-        glUseProgram(ghostProgram);
-        glUniform1i(glGetUniformLocation(ghostProgram, "SrcTex"), 0);
-        ghostLayerULoc = glGetUniformLocation(ghostProgram, "uLayer");
-        glGenVertexArrays(1, &ghostVao);
-    }
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, srcTex);
-    GLint w = 256, h = 192;
-    glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_WIDTH, &w);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_HEIGHT, &h);
-    if (w <= 0 || h <= 0) return srcTex;
-
-    if (!ghostTex || w != ghostW || h != ghostH)
-    {
-        if (ghostTex) { glDeleteTextures(1, &ghostTex); glDeleteFramebuffers(2, ghostFbo); }
-        glGenTextures(1, &ghostTex);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, ghostTex);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        // 16 bit float: repeated mixing must not get stuck on 8 bit rounding
-        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA16F, w, h, 2, 0, GL_RGBA, GL_FLOAT, nullptr);
-        glGenFramebuffers(2, ghostFbo);
-        for (int i = 0; i < 2; i++)
-        {
-            glBindFramebuffer(GL_FRAMEBUFFER, ghostFbo[i]);
-            glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, ghostTex, 0, i);
-        }
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        ghostW = w;
-        ghostH = h;
-        ghostValid = false;
-    }
-
-    // mix in once per emulated frame (also correct when the window repaints)
-    if (!ghostValid || frame != ghostLastFrame)
-    {
-        // share of the previous picture that stays (DS LCD: roughly "strong")
-        const float keep = level == 1 ? 0.30f : level == 2 ? 0.45f : 0.60f;
-        const float a = (ghostValid && frame == ghostLastFrame + 1) ? 1.0f - keep : 1.0f;
-
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D_ARRAY, srcTex);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glUseProgram(ghostProgram);
-        glBindVertexArray(ghostVao);
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA);
-        glBlendColor(0.f, 0.f, 0.f, a);
-        glViewport(0, 0, w, h);
-        for (int i = 0; i < 2; i++)
-        {
-            glBindFramebuffer(GL_FRAMEBUFFER, ghostFbo[i]);
-            glUniform1f(ghostLayerULoc, (float)i);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
-        glDisable(GL_BLEND);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glViewport(0, 0, winW, winH);
-        ghostLastFrame = frame;
-        ghostValid = true;
-    }
-
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, ghostTex);
-    return ghostTex;
-}
-
-void ScreenPanelGL::deleteGhosting()
-{
-    if (ghostTex) { glDeleteTextures(1, &ghostTex); glDeleteFramebuffers(2, ghostFbo); }
-    if (ghostVao) glDeleteVertexArrays(1, &ghostVao);
-    if (ghostProgram) glDeleteProgram(ghostProgram);
-    ghostTex = ghostVao = ghostProgram = 0;
-    ghostFbo[0] = ghostFbo[1] = 0;
-    ghostW = ghostH = 0;
-    ghostValid = false;
-}
-
 void ScreenPanelGL::deinitOpenGL()
 {
     if (!glContext) return;
     if (!glInited) return;
 
     glContext->MakeCurrent();
-
-    deleteGhosting();
 
     glDeleteTextures(1, &screenTexture);
 
@@ -1224,7 +1132,6 @@ void ScreenPanelGL::drawScreen()
         glUniform2f(screenShaderScreenSizeULoc, w / factor, h / factor);
 
         void* topbuf; void* bottombuf;
-        GLuint srcTex;
         if (nds->GPU.GetFramebuffers(&topbuf, &bottombuf))
         {
             // if we're doing a regular render, use the provided framebuffers
@@ -1237,7 +1144,6 @@ void ScreenPanelGL::drawScreen()
                             GL_UNSIGNED_BYTE, topbuf);
             glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, 1, 256, 192, 1, GL_BGRA,
                             GL_UNSIGNED_BYTE, bottombuf);
-            srcTex = screenTexture;
         }
         else
         {
@@ -1245,16 +1151,6 @@ void ScreenPanelGL::drawScreen()
 
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D_ARRAY, texid);
-            srcTex = texid;
-        }
-
-        // melonDS Link: LCD ghosting (binds the mixed picture instead)
-        if (ghostLevel > 0 || ghostValid)
-        {
-            applyGhosting(srcTex, nds->NumFrames, w, h);
-            glUseProgram(screenShaderProgram);
-            glBindBuffer(GL_ARRAY_BUFFER, screenVertexBuffer);
-            glBindVertexArray(screenVertexArray);
         }
 
         screenSettingsLock.lock();
