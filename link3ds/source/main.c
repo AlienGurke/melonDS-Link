@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <malloc.h>
 #include <netinet/in.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1156,15 +1157,27 @@ static void drawBottom(bool haveVideo, bool zoom, bool touching, int tx, int ty)
 
     if (zoom)
     {
-        /* 256x192 -> 320x240, nearest neighbour; walk the rotated fb linearly */
-        for (int x = 0; x < 320; x++)
+        /* 256x192 -> 320x240, nearest neighbour, with precomputed source rows/columns */
+        static u16 srcRow[240];   /* framebuffer y (rotated) -> DS image row offset */
+        static u8 srcCol[320];
+        static bool init = false;
+        if (!init)
         {
-            int sx = x * 4 / 5;
-            u16* col = fb + x * 240;
-            for (int y = 0; y < 240; y++)
+            for (int y = 0; y < 240; y++) srcRow[239 - y] = (u16)((y * 4 / 5) * 256);
+            for (int x = 0; x < 320; x++) srcCol[x] = (u8)(x * 4 / 5);
+            init = true;
+        }
+        if (!haveVideo)
+        {
+            for (int i = 0; i < 320 * 240; i++) fb[i] = empty;
+        }
+        else
+        {
+            for (int x = 0; x < 320; x++)
             {
-                int sy = y * 4 / 5;
-                col[239 - y] = haveVideo ? g_dsImage[sy * 256 + sx] : empty;
+                const u16* src = g_dsImage + srcCol[x];
+                u16* col = fb + x * 240;
+                for (int j = 0; j < 240; j++) col[j] = src[srcRow[j]];
             }
         }
     }
@@ -1174,15 +1187,36 @@ static void drawBottom(bool haveVideo, bool zoom, bool touching, int tx, int ty)
         fillRect(fb, LINK_DS_OFFSET_X - 2, LINK_DS_OFFSET_Y - 2, 260, 196, frame);
         for (int x = 0; x < 256; x++)
         {
-            u16* col = fb + (x + LINK_DS_OFFSET_X) * 240;
+            u16* col = fb + (x + LINK_DS_OFFSET_X) * 240 + (239 - LINK_DS_OFFSET_Y);
+            const u16* src = g_dsImage + x;
             for (int y = 0; y < 192; y++)
-                col[239 - (y + LINK_DS_OFFSET_Y)] = haveVideo ? g_dsImage[y * 256 + x] : empty;
+                col[-y] = haveVideo ? src[y * 256] : empty;
         }
     }
 
     /* without a picture, show where the finger is */
     if (!haveVideo && touching)
         fillRect(fb, tx - 2, ty - 2, 5, 5, LINK_RGB565(0xE0, 0x60, 0x60));
+}
+
+/* ------------------------------------------------------------------ */
+/* top screen text: only redraw lines that changed (the console draws  */
+/* in software; redrawing everything 60x a second starved the network)  */
+
+#define CON_ROWS 31
+static char g_conCache[CON_ROWS][160];
+
+static void setLine(int row, const char* fmt, ...)
+{
+    if (row < 1 || row >= CON_ROWS) return;
+    char buf[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (strcmp(buf, g_conCache[row]) == 0) return;
+    snprintf(g_conCache[row], sizeof(g_conCache[row]), "%s", buf);
+    printf("\x1b[%d;1H%s\x1b[0m\x1b[K", row, buf);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1302,9 +1336,11 @@ int main(int argc, char** argv)
 
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    Thread srv = threadCreate(serverThread, NULL, 0x4000, prio + 1, -2, false);
-    Thread inp = threadCreate(inputThread, NULL, 0x4000, prio - 1, -2, false);
-    Thread vid = threadCreate(videoThread, NULL, 0x4000, prio, -2, false);
+    /* lower number = higher priority. The network threads mostly sleep in
+       poll/recv, so they can safely go before the UI (main thread). */
+    Thread inp = threadCreate(inputThread, NULL, 0x4000, prio - 2, -2, false);
+    Thread vid = threadCreate(videoThread, NULL, 0x4000, prio - 1, -2, false);
+    Thread srv = threadCreate(serverThread, NULL, 0x4000, prio - 1, -2, false);
 
     u32 lastVideoFrames = (u32)-1;
     bool lastZoom = !g_zoom, lastHaveVideo = true;
@@ -1371,39 +1407,32 @@ int main(int argc, char** argv)
         }
 
         /* top screen: status */
-        char status[128], peer[32], game[128];
+        char status[128], peer[32], game[128], xi[64];
         LightLock_Lock(&g_lock);
         snprintf(status, sizeof(status), "%s", g_statusText);
         snprintf(peer, sizeof(peer), "%s", g_peerName);
         snprintf(game, sizeof(game), "%s", g_currentGame);
+        snprintf(xi, sizeof(xi), "%s", g_xferInfo);
         LightLock_Unlock(&g_lock);
 
-        printf("\x1b[3;1HIP-Adresse:  \x1b[33m%s\x1b[0m          \n", inet_ntoa(ip));
-        printf("\x1b[4;1HmelonDS:     %s\x1b[K\n",
-               g_tcpConnected ? "\x1b[32mverbunden\x1b[0m" : "\x1b[90mwartet...\x1b[0m");
-        printf("\x1b[5;1HSteuerung:   %s   Bild: %s\x1b[K\n",
-               in.haveUdpPeer ? "\x1b[32maktiv\x1b[0m" : "\x1b[90m-\x1b[0m",
-               haveVideo ? "\x1b[32mok\x1b[0m" : "\x1b[90m-\x1b[0m");
-        printf("\x1b[6;1HAnzeige:     %s\x1b[K\n", zoom ? "Vergroessert" : "Original (1:1)");
-        {
-            char xi[64];
-            LightLock_Lock(&g_lock);
-            snprintf(xi, sizeof(xi), "%s", g_xferInfo);
-            LightLock_Unlock(&g_lock);
-            printf("\x1b[7;1H\x1b[90m%.49s\x1b[0m\x1b[K\n", xi);
-        }
-        printf("\x1b[8;1H\x1b[33m%.49s\x1b[0m\x1b[K\n", status);
+        setLine(3, "IP-Adresse:  \x1b[33m%s", inet_ntoa(ip));
+        setLine(4, "melonDS:     %s", g_tcpConnected ? "\x1b[32mverbunden" : "\x1b[90mwartet...");
+        setLine(5, "Steuerung:   %s\x1b[0m   Bild: %s",
+                in.haveUdpPeer ? "\x1b[32maktiv" : "\x1b[90m-",
+                haveVideo ? "\x1b[32mok" : "\x1b[90m-");
+        setLine(6, "Anzeige:     %s", zoom ? "Vergroessert" : "Original (1:1)");
+        setLine(7, "\x1b[90m%.49s", xi);
+        setLine(8, "\x1b[33m%.49s", status);
 
         /* top screen: game list or current game */
         if (g_menuOpen)
         {
-            printf("\x1b[10;1H\x1b[36mSpiel waehlen\x1b[0m (%d in %s)\x1b[K\n", g_gameCount, g_romDir);
+            setLine(10, "\x1b[36mSpiel waehlen\x1b[0m (%d in %.30s)", g_gameCount, g_romDir);
             if (menuCursor < menuTop) menuTop = menuCursor;
             if (menuCursor >= menuTop + LIST_ROWS) menuTop = menuCursor - LIST_ROWS + 1;
             for (int r = 0; r < LIST_ROWS; r++)
             {
                 int i = menuTop + r;
-                printf("\x1b[%d;1H", 11 + r);
                 if (i < g_gameCount)
                 {
                     char name[64];
@@ -1411,28 +1440,27 @@ int main(int argc, char** argv)
                     size_t n = strlen(name);
                     if (n > 4 && strcasecmp(name + n - 4, ".nds") == 0) name[n - 4] = '\0';
                     bool fav = isFav(g_games[i]);
-                    if (i == menuCursor) printf("\x1b[47;30m>%c%-47.47s\x1b[0m", fav ? '*' : ' ', name);
-                    else if (fav) printf("\x1b[33m*\x1b[0m %-47.47s", name);
-                    else printf("  %-47.47s", name);
+                    if (i == menuCursor) setLine(11 + r, "\x1b[47;30m>%c%-47.47s", fav ? '*' : ' ', name);
+                    else if (fav) setLine(11 + r, "\x1b[33m*\x1b[0m %-47.47s", name);
+                    else setLine(11 + r, "  %-47.47s", name);
                 }
                 else if (r == 0 && g_gameCount == 0)
-                    printf("\x1b[31m  Keine .nds-Dateien gefunden.\x1b[0m\x1b[K");
-                else printf("\x1b[K");
+                    setLine(11 + r, "\x1b[31m  Keine .nds-Dateien gefunden.");
+                else setLine(11 + r, "");
             }
-            printf("\x1b[26;1H\x1b[90mA starten  X Favorit  Y neu laden%s\x1b[K\n",
-                   g_gameStarted ? "  B zurueck" : "");
+            setLine(26, "\x1b[90mA starten  X Favorit  Y neu laden%s", g_gameStarted ? "  B zurueck" : "");
         }
         else
         {
-            printf("\x1b[10;1H\x1b[36mLaeuft:\x1b[0m %.40s\x1b[K\n", game);
-            for (int r = 0; r < LIST_ROWS; r++) printf("\x1b[%d;1H\x1b[K", 11 + r);
-            printf("\x1b[26;1H\x1b[K\n");
+            setLine(10, "\x1b[36mLaeuft:\x1b[0m %.40s", game);
+            for (int r = 0; r < LIST_ROWS; r++) setLine(11 + r, "");
+            setLine(26, "");
         }
 
-        printf("\x1b[27;1H\x1b[90mC-Stick runter = Spieleliste\x1b[K\n");
-        printf("C-Stick hoch = Original / Vergroessert\x1b[K\n");
-        printf("In melonDS: 3DS Link > Mit 3DS verbinden\x1b[K\n");
-        printf("SELECT + START halten = Beenden\x1b[0m");
+        setLine(27, "\x1b[90mC-Stick runter = Spieleliste");
+        setLine(28, "\x1b[90mC-Stick hoch = Original / Vergroessert");
+        setLine(29, "\x1b[90mIn melonDS: 3DS Link > Mit 3DS verbinden");
+        setLine(30, "\x1b[90mSELECT + START halten = Beenden");
 
         gfxFlushBuffers();
         gfxSwapBuffers();
