@@ -18,11 +18,14 @@ die SD-Karte (Spielstände, später ROMs).
 wie TWiLight Menu++). Jedes Speichern im Spiel wird sofort auf den 3DS geschrieben –
 erst in eine Zwischendatei, dann ausgetauscht, so dass ein WLAN-Abbruch nichts
 beschädigt. Ist der 3DS gerade nicht erreichbar, holt melonDS das nach. Die letzten
-5 Versionen liegen zusätzlich in `melonDS-Link/Backups/<Spiel>/` neben melonDS.
+5 Versionen liegen zusätzlich in `melonDS-Link/Backups/<Spiel>/` im melonDS-Ordner
+(in melonDS: **3DS Link → Backup- und ROM-Ordner öffnen**).
 
 **Spieleliste:** zeigt alle `.nds` aus `/roms/nds` (änderbar: `romdir=` in
 `sd:/3ds/melonDS-Link.cfg`). Steuerkreuz/Circle Pad wählen, L/R blättern,
-A startet, Y lädt die Liste neu, B schließt sie. **C-Stick nach unten** öffnet die
+A startet, X markiert als Favorit (steht dann mit * oben), Y lädt die Liste neu,
+B schließt sie. Beim Start steht die Auswahl auf dem zuletzt gespielten Spiel.
+Favoriten: `sd:/3ds/melonDS-Link-favoriten.txt`. **C-Stick nach unten** öffnet die
 Liste jederzeit; solange sie offen ist, bekommt das Spiel keine Eingaben.
 
 **Anzeigemodi** (C-Stick nach oben wechselt, die Wahl wird gespeichert):

@@ -146,9 +146,77 @@ static LinkEvent g_event;
 static char g_eventRom[LINK_MAX_PATH];
 static char g_eventSave[LINK_MAX_PATH];
 
+/* favourites: one file name per line in FAVS_PATH */
+#define FAVS_PATH "sdmc:/3ds/melonDS-Link-favoriten.txt"
+#define MAX_FAVS 128
+static char* g_favs[MAX_FAVS];
+static int g_favCount = 0;
+static char g_lastGame[256] = "";   /* file name of the last launched game */
+
+static bool isFav(const char* name)
+{
+    for (int i = 0; i < g_favCount; i++)
+        if (strcasecmp(g_favs[i], name) == 0) return true;
+    return false;
+}
+
+static void loadFavs(void)
+{
+    FILE* f = fopen(FAVS_PATH, "r");
+    if (!f) return;
+    char line[300];
+    while (g_favCount < MAX_FAVS && fgets(line, sizeof(line), f))
+    {
+        line[strcspn(line, "\r\n")] = '\0';
+        if (line[0] && !isFav(line)) g_favs[g_favCount++] = strdup(line);
+    }
+    fclose(f);
+}
+
+static void saveFavs(void)
+{
+    FILE* f = fopen(FAVS_PATH, "w");
+    if (!f) return;
+    for (int i = 0; i < g_favCount; i++) fprintf(f, "%s\n", g_favs[i]);
+    fclose(f);
+}
+
+static void toggleFav(const char* name)
+{
+    for (int i = 0; i < g_favCount; i++)
+    {
+        if (strcasecmp(g_favs[i], name) == 0)
+        {
+            free(g_favs[i]);
+            g_favs[i] = g_favs[--g_favCount];
+            saveFavs();
+            return;
+        }
+    }
+    if (g_favCount < MAX_FAVS) g_favs[g_favCount++] = strdup(name);
+    saveFavs();
+}
+
+/* favourites first, then alphabetical */
 static int cmpNoCase(const void* a, const void* b)
 {
-    return strcasecmp(*(char* const*)a, *(char* const*)b);
+    const char* x = *(char* const*)a;
+    const char* y = *(char* const*)b;
+    bool fx = isFav(x), fy = isFav(y);
+    if (fx != fy) return fx ? -1 : 1;
+    return strcasecmp(x, y);
+}
+
+static void sortGames(void)
+{
+    qsort(g_games, g_gameCount, sizeof(char*), cmpNoCase);
+}
+
+static int findGame(const char* name)
+{
+    for (int i = 0; i < g_gameCount; i++)
+        if (strcasecmp(g_games[i], name) == 0) return i;
+    return -1;
 }
 
 static bool hasNdsExt(const char* name)
@@ -172,7 +240,7 @@ static void scanGames(void)
         g_games[g_gameCount++] = strdup(e->d_name);
     }
     closedir(d);
-    qsort(g_games, g_gameCount, sizeof(char*), cmpNoCase);
+    sortGames();
 }
 
 static bool sdExists(const char* sdPath)
@@ -214,6 +282,7 @@ static void requestLaunch(int idx)
     g_event.savePathLen = (uint16_t)strlen(g_eventSave);
     g_haveEvent = true;
     snprintf(g_currentGame, sizeof(g_currentGame), "%.120s", base);
+    snprintf(g_lastGame, sizeof(g_lastGame), "%s", name);
     snprintf(g_statusText, sizeof(g_statusText), "Starte Spiel - warte auf melonDS...");
     LightLock_Unlock(&g_lock);
 
@@ -916,6 +985,11 @@ static void loadConfig(void)
         int v;
         char dir[128];
         if (sscanf(line, "zoom=%d", &v) == 1) g_zoom = v != 0;
+        else if (strncmp(line, "last=", 5) == 0)
+        {
+            snprintf(g_lastGame, sizeof(g_lastGame), "%s", line + 5);
+            g_lastGame[strcspn(g_lastGame, "\r\n")] = '\0';
+        }
         else if (sscanf(line, "romdir=%127[^\r\n]", dir) == 1 && dir[0] == '/')
         {
             size_t n = strlen(dir);
@@ -932,6 +1006,7 @@ static void saveConfig(void)
     if (!f) return;
     fprintf(f, "zoom=%d\n", g_zoom ? 1 : 0);
     fprintf(f, "romdir=%s\n", g_romDir);
+    if (g_lastGame[0]) fprintf(f, "last=%s\n", g_lastGame);
     fclose(f);
 }
 
@@ -951,6 +1026,7 @@ int main(int argc, char** argv)
     LightLock_Init(&g_lock);
     LightLock_Init(&g_ackLock);
     loadConfig();
+    loadFavs();
     scanGames();
 
     printf("\x1b[1;1H\x1b[36mmelonDS Link\x1b[0m  (Protokoll v%u)\n\n", (unsigned)LINK_VERSION);
@@ -1019,6 +1095,7 @@ int main(int argc, char** argv)
     bool lastZoom = !g_zoom, lastHaveVideo = true;
     bool savedZoom = g_zoom;
     int menuCursor = 0, menuTop = 0;
+    if (g_lastGame[0]) { int i = findGame(g_lastGame); if (i >= 0) menuCursor = i; }
     const int LIST_ROWS = 14;
     int redrawBoth = 2;
 
@@ -1061,8 +1138,20 @@ int main(int argc, char** argv)
             if (mk & (KEY_DRIGHT | KEY_R)) menuCursor += LIST_ROWS;
             if (menuCursor >= g_gameCount) menuCursor = g_gameCount - 1;
             if (menuCursor < 0) menuCursor = 0;
-            if (mk & KEY_Y) scanGames();
-            if ((mk & KEY_A) && g_gameCount > 0) requestLaunch(menuCursor);
+            if ((mk & (KEY_X | KEY_Y)) && g_gameCount > 0)
+            {
+                char keep[256];
+                snprintf(keep, sizeof(keep), "%s", g_games[menuCursor]);
+                if (mk & KEY_X) { toggleFav(keep); sortGames(); }
+                if (mk & KEY_Y) scanGames();
+                int i = findGame(keep);
+                if (i >= 0) menuCursor = i;
+            }
+            if ((mk & KEY_A) && g_gameCount > 0)
+            {
+                requestLaunch(menuCursor);
+                saveConfig();      /* remembers the last game */
+            }
             else if ((mk & KEY_B) && g_gameStarted) g_menuOpen = false;
         }
 
@@ -1099,15 +1188,17 @@ int main(int argc, char** argv)
                     snprintf(name, sizeof(name), "%s", g_games[i]);
                     size_t n = strlen(name);
                     if (n > 4 && strcasecmp(name + n - 4, ".nds") == 0) name[n - 4] = '\0';
-                    if (i == menuCursor) printf("\x1b[47;30m> %-47.47s\x1b[0m", name);
+                    bool fav = isFav(g_games[i]);
+                    if (i == menuCursor) printf("\x1b[47;30m>%c%-47.47s\x1b[0m", fav ? '*' : ' ', name);
+                    else if (fav) printf("\x1b[33m*\x1b[0m %-47.47s", name);
                     else printf("  %-47.47s", name);
                 }
                 else if (r == 0 && g_gameCount == 0)
                     printf("\x1b[31m  Keine .nds-Dateien gefunden.\x1b[0m\x1b[K");
                 else printf("\x1b[K");
             }
-            printf("\x1b[26;1H\x1b[90mA = starten   Y = Liste neu laden%s\x1b[K\n",
-                   g_gameStarted ? "   B = zurueck" : "");
+            printf("\x1b[26;1H\x1b[90mA starten  X Favorit  Y neu laden%s\x1b[K\n",
+                   g_gameStarted ? "  B zurueck" : "");
         }
         else
         {

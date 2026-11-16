@@ -41,6 +41,8 @@
 #include <QVector>
 #include <QCommandLineParser>
 #include <QDesktopServices>
+#include <QUrl>
+#include <QDir>
 
 #include "main.h"
 #include "CheatsDialog.h"
@@ -635,6 +637,15 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
             actLinkDisconnect = menu->addAction("Trennen");
             connect(actLinkDisconnect, &QAction::triggered, this, &MainWindow::onLinkDisconnect);
+
+            menu->addSeparator();
+            QAction* actLinkFolder = menu->addAction("Backup- und ROM-Ordner oeffnen");
+            connect(actLinkFolder, &QAction::triggered, this, []
+            {
+                QString dir = QString::fromStdString(Link::Session::BaseDir());
+                QDir().mkpath(dir + "/Backups");
+                QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+            });
 
             // games picked on the 3DS are prepared and booted from here (instance 0)
             if (windowID == 0 && emuInstance->getInstanceID() == 0)
