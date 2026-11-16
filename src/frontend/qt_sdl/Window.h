@@ -61,6 +61,7 @@ public:
 
     void toggleFullscreen();
     void applyMouseHide();   // fullscreen: hide the mouse pointer quickly
+    QAction* actGhosting[4] = {};   // LCD ghosting off/light/medium/strong
     QAction* actLeaveFullscreen = nullptr;   // Esc, only active in fullscreen
     bool maximizedBeforeFullscreen = false;
 

@@ -19,6 +19,7 @@
 #ifndef SCREEN_H
 #define SCREEN_H
 
+#include <atomic>
 #include <optional>
 #include <deque>
 #include <map>
@@ -61,6 +62,8 @@ public:
     void setFilter(bool filter);
 
     void setMouseHide(bool enable, int delay);
+    // melonDS Link: LCD ghosting (0 = off, 1-3 = light/medium/strong), OpenGL display only
+    virtual void setGhosting(int level) { (void)level; }
     // melonDS Link: apply a hide setting and start counting from now
     void setCursorAutoHide(bool enable, int delay) { setMouseHide(enable, delay); showCursor(); }
 
@@ -203,6 +206,7 @@ public:
     void releaseGL();
 
     void drawScreen() override;
+    void setGhosting(int level) override { ghostLevel = level; }
 
     GL::Context* getContext() { return glContext.get(); }
 
@@ -240,6 +244,17 @@ private:
     std::map<unsigned int, GLuint> osdTextures;
 
     GLuint logoTexture;
+
+    // LCD ghosting (melonDS Link): every new frame is mixed into an
+    // accumulation texture, like the slow LCD of the DS
+    std::atomic<int> ghostLevel { 0 };
+    GLuint ghostProgram = 0, ghostTex = 0, ghostFbo[2] = {0, 0}, ghostVao = 0;
+    GLint ghostLayerULoc = -1;
+    int ghostW = 0, ghostH = 0;
+    unsigned int ghostLastFrame = 0;
+    bool ghostValid = false;
+    GLuint applyGhosting(GLuint srcTex, unsigned int frame, int winW, int winH);
+    void deleteGhosting();
 
     void osdRenderItem(OSDItem* item) override;
     void osdDeleteItem(OSDItem* item) override;

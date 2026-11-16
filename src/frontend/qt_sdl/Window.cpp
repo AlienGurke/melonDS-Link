@@ -591,6 +591,27 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 menu->addSeparator();
             }
 
+            {
+                // melonDS Link: LCD ghosting, softens the pixel jumps of moving pictures
+                QMenu* submenu = menu->addMenu("LCD-Nachzieheffekt");
+                auto* grp = new QActionGroup(submenu);
+                const char* names[4] = {"Aus", "Leicht", "Mittel", "Stark (wie DS)"};
+                for (int i = 0; i < 4; i++)
+                {
+                    actGhosting[i] = submenu->addAction(names[i]);
+                    actGhosting[i]->setCheckable(true);
+                    actGhosting[i]->setActionGroup(grp);
+                    connect(actGhosting[i], &QAction::triggered, this, [this, i]
+                    {
+                        globalCfg.SetInt("Screen.LCDGhosting", i);
+                        Config::Save();
+                        if (panel) panel->setGhosting(i);
+                    });
+                }
+                int g = globalCfg.GetInt("Screen.LCDGhosting");
+                actGhosting[(g >= 0 && g <= 3) ? g : 0]->setChecked(true);
+            }
+
             actScreenFiltering = menu->addAction("Screen filtering");
             actScreenFiltering->setCheckable(true);
             connect(actScreenFiltering, &QAction::triggered, this, &MainWindow::onChangeScreenFiltering);
@@ -1037,6 +1058,7 @@ void MainWindow::createScreenPanel()
     connect(this, SIGNAL(screenLayoutChange()), panel, SLOT(onScreenLayoutChanged()));
     emit screenLayoutChange();
     applyMouseHide();
+    panel->setGhosting(globalCfg.GetInt("Screen.LCDGhosting"));
 }
 
 GL::Context* MainWindow::getOGLContext()
