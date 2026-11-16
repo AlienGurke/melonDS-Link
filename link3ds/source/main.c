@@ -54,6 +54,10 @@ static void setStatusText(const char* s)
    timeout) therefore stalls every other thread's socket calls - the video
    receiver and the input sender included. So we never block inside the socket
    service: we try, and if it would block, we sleep in our own thread. */
+/* set while a big transfer (ROM stream, speed test) runs: the video and
+   input threads then leave the shared socket service alone */
+static volatile bool g_bulkActive = false;
+
 /* measurements for the transfer statistics (see streamFile) */
 static volatile u64 g_statSendSleeps;   /* 0.5 ms sleeps because the WiFi send buffer was full */
 static volatile u64 g_statReadTicks, g_statReadBytes;   /* SD card */
@@ -451,6 +455,7 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
 
     u64 len64 = length;
     if (!sendResponse(fd, h, LINK_OK, &len64, sizeof(len64))) { fclose(f); return false; }
+    g_bulkActive = true;
 
     /* on a New 3DS the reading/compressing runs on its own CPU core */
     s32 prio = 0x30;
@@ -523,6 +528,7 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
         }
     }
     g_streamStop = true;
+    g_bulkActive = false;
     threadJoin(rd, U64_MAX);
     threadFree(rd);
     fclose(f);
@@ -717,9 +723,13 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         u64 total = (u64)mb * 1024 * 1024;
         if (!sendResponse(fd, h, LINK_OK, &total, sizeof(total))) return false;
         g_statSendSleeps = 0;
+        g_bulkActive = true;
         u64 t0 = osGetTime();
-        for (u64 sent = 0; sent < total; sent += 0x10000)
-            if (!sendAll(fd, junk, 0x10000)) return false;
+        bool okSend = true;
+        for (u64 sent = 0; sent < total && okSend; sent += 0x10000)
+            okSend = sendAll(fd, junk, 0x10000);
+        g_bulkActive = false;
+        if (!okSend) return false;
         u64 ms = osGetTime() - t0;
         LightLock_Lock(&g_lock);
         snprintf(g_xferInfo, sizeof(g_xferInfo), "Speedtest: %lu KB/s (%lu MB in %lu.%lus)",
@@ -990,8 +1000,9 @@ static void videoThread(void* arg)
                 lastPresent = osGetTime();
             }
             /* nothing there: sleep in our own thread (never block inside the
-               shared socket service, see sendAll) */
-            svcSleepThread(1000000);   /* 1 ms */
+               shared socket service, see sendAll). During big transfers no
+               picture comes anyway, so check rarely. */
+            svcSleepThread(g_bulkActive ? 20000000 : 1000000);   /* 20 ms / 1 ms */
             continue;
         }
         if ((size_t)n < sizeof(LinkFramePacket)) continue;
@@ -1126,7 +1137,7 @@ static void inputThread(void* arg)
 
         /* HELO from the PC (keep-alive, once a second): checking every 50 ms
            is plenty and keeps the socket service free for the transfers */
-        if (++heloCheck >= 12)
+        if (!g_bulkActive && ++heloCheck >= 12)
         for (heloCheck = 0;;)
         {
             uint32_t msg = 0;
@@ -1141,6 +1152,7 @@ static void inputThread(void* arg)
                 lastHello = osGetTime();
             }
         }
+        if (g_bulkActive) lastHello = osGetTime();   /* we were not looking */
         if (havePeer && osGetTime() - lastHello > 5000) havePeer = false;
 
         touchPosition touch;
@@ -1152,7 +1164,7 @@ static void inputThread(void* arg)
         u16 dsX = 0, dsY = 0;
         bool dsTouch = (gameKeys & KEY_TOUCH) && mapTouch(touch.px, touch.py, g_zoom, &dsX, &dsY);
 
-        if (havePeer)
+        if (havePeer && !g_bulkActive)
         {
             LinkInputPacket p;
             memset(&p, 0, sizeof(p));
