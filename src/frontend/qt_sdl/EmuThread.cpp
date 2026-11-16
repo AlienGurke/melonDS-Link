@@ -60,6 +60,28 @@
 using namespace melonDS;
 
 
+#ifdef OGLRENDERER_ENABLED
+// GL objects of the capture. They belong to the GL context that was current
+// when they were made: forget them whenever that context goes away (switching
+// between software and OpenGL creates a new one), otherwise their names may
+// point at nothing - or at melonDS' own objects in the new context.
+static GLuint linkCapReadFb = 0, linkCapDrawFb = 0, linkCapRb = 0;
+#endif
+
+// contextAlive: the context is still current (renderer change) -> delete them
+static void linkCaptureReset(bool contextAlive)
+{
+#ifdef OGLRENDERER_ENABLED
+    if (contextAlive && linkCapReadFb)
+    {
+        glDeleteFramebuffers(1, &linkCapReadFb);
+        glDeleteFramebuffers(1, &linkCapDrawFb);
+        glDeleteRenderbuffers(1, &linkCapRb);
+    }
+    linkCapReadFb = linkCapDrawFb = linkCapRb = 0;
+#endif
+}
+
 // melonDS Link: hand the DS bottom screen (256x192) to the 3DS sender.
 // Software renderer: RAM framebuffer. OpenGL renderer: scale the bottom layer
 // of the output texture down to 256x192 on the GPU and read it back.
@@ -76,8 +98,10 @@ static void linkCaptureBottomScreen(melonDS::NDS* nds)
     if (!top) return;
     GLuint tex = *(GLuint*)top;
 
-    static GLuint readFb = 0, drawFb = 0, rb = 0;
     static std::vector<uint32_t> pixels(256 * 192);
+    GLuint& readFb = linkCapReadFb;
+    GLuint& drawFb = linkCapDrawFb;
+    GLuint& rb = linkCapRb;
     if (!readFb)
     {
         glGenFramebuffers(1, &readFb);
@@ -107,6 +131,15 @@ static void linkCaptureBottomScreen(melonDS::NDS* nds)
     glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, rb);
     glDrawBuffer(GL_COLOR_ATTACHMENT0);
 
+    if (w < 256 || h < 192 ||
+        glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+        glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    {
+        // not ready (e.g. right after a renderer switch): skip this frame
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
+        return;
+    }
     glBlitFramebuffer(0, 0, w, h, 0, 0, 256, 192, GL_COLOR_BUFFER_BIT,
                       (w == 256 && h == 192) ? GL_NEAREST : GL_LINEAR);
 
@@ -636,11 +669,13 @@ void EmuThread::handleMessages()
             break;
 
         case msg_InitGL:
+            if (msg.param.value<int>() == 0) linkCaptureReset(false);
             emuInstance->initOpenGL(msg.param.value<int>());
             useOpenGL = true;
             break;
 
         case msg_DeInitGL:
+            if (msg.param.value<int>() == 0) linkCaptureReset(false);
             emuInstance->deinitOpenGL(msg.param.value<int>());
             if (msg.param.value<int>() == 0)
                 useOpenGL = false;
@@ -946,6 +981,8 @@ void EmuThread::updateRenderer()
 
     if (videoRenderer != lastVideoRenderer)
     {
+        // same context, but start the capture from scratch with the new renderer
+        if (useOpenGL) linkCaptureReset(true);
         switch (videoRenderer)
         {
             case renderer3D_Software:
