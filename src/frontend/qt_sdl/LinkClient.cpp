@@ -533,7 +533,7 @@ void Client::processAcks()
         if (!received && !lost) break;
         if (lost)
         {
-            for (uint16_t t : p.tiles) forceTile[t] = 1;
+            for (uint16_t t : p.tiles) tileLevel[t] = 255;
             statLost++;
         }
         else statReceived++;
@@ -543,7 +543,7 @@ void Client::processAcks()
     // never let the list grow without bound
     while (inFlight.size() > 512)
     {
-        for (uint16_t t : inFlight.front().tiles) forceTile[t] = 1;
+        for (uint16_t t : inFlight.front().tiles) tileLevel[t] = 255;
         inFlight.pop_front();
     }
 }
@@ -626,16 +626,69 @@ unsigned encodeTile(const uint16_t* src, uint8_t* out, size_t& size)
 
 }
 
+namespace
+{
+
+// lossy previews: average 2x2 (HALF, 4x4 result) or 4x4 (QUARTER, 2x2 result) blocks
+void encodeReduced(const uint16_t* src, int block, uint16_t* out)
+{
+    int n = 8 / block;
+    for (int by = 0; by < n; by++)
+        for (int bx = 0; bx < n; bx++)
+        {
+            unsigned r = 0, g = 0, b = 0;
+            for (int dy = 0; dy < block; dy++)
+                for (int dx = 0; dx < block; dx++)
+                {
+                    uint16_t c = src[(by * block + dy) * 256 + bx * block + dx];
+                    r += c >> 11; g += (c >> 5) & 0x3F; b += c & 0x1F;
+                }
+            unsigned cnt = block * block;
+            out[by * n + bx] = (uint16_t)(((r / cnt) << 11) | ((g / cnt) << 5) | (b / cnt));
+        }
+}
+
+struct EncTile
+{
+    int t;
+    unsigned type;
+    size_t size;
+    uint8_t level;      // 0 exact, 1 half, 2 quarter
+    uint8_t data[128];
+};
+
+void makeLevel(EncTile& e, const uint16_t* src, uint8_t level)
+{
+    e.level = level;
+    if (level == 0) e.type = encodeTile(src, e.data, e.size);
+    else if (level == 1) { encodeReduced(src, 2, (uint16_t*)e.data); e.type = LINK_TILE_HALF; e.size = 32; }
+    else { encodeReduced(src, 4, (uint16_t*)e.data); e.type = LINK_TILE_QUARTER; e.size = 8; }
+    // exact encodings that are already tiny are never worth reducing
+    if (level > 0)
+    {
+        uint8_t tmp[128];
+        size_t exactSize;
+        unsigned exactType = encodeTile(src, tmp, exactSize);
+        if (exactSize <= e.size) { e.type = exactType; e.size = exactSize; memcpy(e.data, tmp, exactSize); e.level = 0; }
+    }
+}
+
+}
+
 void Client::sendTiles(const std::vector<uint16_t>& frame)
 {
-    constexpr int kRefreshPerFrame = 4;          // safety net only
+    // Rule: every tile whose content changed is sent in the same update, so
+    // the 3DS never shows a mix of old and new. If that does not fit the
+    // budget, tiles are sent coarser (half, then quarter resolution). Spare
+    // budget is used to sharpen previews and to refresh a few tiles.
+    constexpr int kRefreshPerFrame = 4;
     constexpr double kMinBudget = 12 * 1024, kMaxBudget = 64 * 1024;
 
     if (frame.size() != 256 * 192) return;
-    if (videoResync.exchange(false) || sentFrame.size() != frame.size())
+    if (videoResync.exchange(false) || shownSource.size() != frame.size())
     {
-        sentFrame.assign(frame.size(), 0);
-        forceTile.assign(LINK_TILE_COUNT, 1);  // send everything
+        shownSource.assign(frame.size(), 0);
+        tileLevel.assign(LINK_TILE_COUNT, 255);  // send everything
         inFlight.clear();
         {
             std::lock_guard<std::mutex> lock(videoMutex);
@@ -646,7 +699,6 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         budgetBytes = 24 * 1024;
         statReceived = statLost = 0;
     }
-    if (forceTile.size() != LINK_TILE_COUNT) forceTile.assign(LINK_TILE_COUNT, 1);
 
     // adapt the data rate: more while the WiFi keeps up, less when packets get lost
     if (statReceived + statLost >= 30)
@@ -658,100 +710,82 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         statReceived = statLost = 0;
     }
     const size_t budget = (size_t)budgetBytes;
-    // spread one frame's packets over roughly half a frame
     const double bytesPerSec = std::min(6.0e6, std::max(2.0e6, budgetBytes * 120.0));
 
     auto tileBase = [](int t) { return (t / LINK_TILES_X) * 8 * 256 + (t % LINK_TILES_X) * 8; };
-    auto tileChanged = [&](int t)
+    auto contentChanged = [&](int t)
     {
         int base = tileBase(t);
         for (int y = 0; y < 8; y++)
-            if (memcmp(&frame[base + y * 256], &sentFrame[base + y * 256], 16) != 0) return true;
+            if (memcmp(&frame[base + y * 256], &shownSource[base + y * 256], 16) != 0) return true;
         return false;
     };
 
-    // which tiles: lost/forced ones, a few refresh tiles, then changed tiles
-    std::vector<int> order;
-    order.reserve(LINK_TILE_COUNT);
-    std::vector<uint8_t> picked(LINK_TILE_COUNT, 0);
-    for (int t = 0; t < LINK_TILE_COUNT; t++)
-        if (forceTile[t]) { picked[t] = 1; order.push_back(t); }
-    for (int i = 0; i < kRefreshPerFrame; i++)
-    {
-        int t = (int)((refreshCursor + i) % LINK_TILE_COUNT);
-        if (!picked[t]) { picked[t] = 1; order.push_back(t); }
-    }
-    refreshCursor = (refreshCursor + kRefreshPerFrame) % LINK_TILE_COUNT;
-    for (int i = 0; i < LINK_TILE_COUNT; i++)
-    {
-        int t = (int)((scanStart + i) % LINK_TILE_COUNT);
-        if (!picked[t] && tileChanged(t)) order.push_back(t);
-    }
-    if (order.empty()) return;
-
-    // encode everything exactly first
-    struct Enc { int t; unsigned type; size_t size; uint8_t data[128]; };
-    std::vector<Enc> enc(order.size());
+    // 1) mandatory: changed content or unknown state (lost packets)
+    std::vector<EncTile> must;
+    std::vector<uint8_t> isMust(LINK_TILE_COUNT, 0);
     size_t total = 0;
-    for (size_t k = 0; k < order.size(); k++)
+    for (int t = 0; t < LINK_TILE_COUNT; t++)
     {
-        enc[k].t = order[k];
-        enc[k].type = encodeTile(&frame[tileBase(order[k])], enc[k].data, enc[k].size);
-        total += 2 + enc[k].size;
+        if (tileLevel[t] != 255 && !contentChanged(t)) continue;
+        isMust[t] = 1;
+        EncTile e;
+        e.t = t;
+        makeLevel(e, &frame[tileBase(t)], 0);
+        total += 2 + e.size;
+        must.push_back(e);
     }
 
-    // too much for one update (e.g. a full-screen fade)? Send the biggest
-    // tiles as a half-resolution preview so the whole picture still changes
-    // at once; the exact tiles follow on the next, calmer frames.
-    if (total > budget)
+    // degrade the biggest tiles step by step until everything fits
+    for (uint8_t level = 1; level <= 2 && total > budget; level++)
     {
-        std::vector<size_t> big;
-        for (size_t k = 0; k < enc.size(); k++)
-            if (enc[k].size > 34) big.push_back(k);
-        std::sort(big.begin(), big.end(), [&](size_t a, size_t b) { return enc[a].size > enc[b].size; });
-        for (size_t k : big)
+        std::vector<size_t> idx(must.size());
+        for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
+        std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return must[a].size > must[b].size; });
+        for (size_t i : idx)
         {
             if (total <= budget) break;
-            Enc& e = enc[k];
-            int base = tileBase(e.t);
-            const uint16_t* src = &frame[base];
-            uint16_t px[16];
-            for (int by = 0; by < 4; by++)
-                for (int bx = 0; bx < 4; bx++)
-                {
-                    unsigned r = 0, g = 0, b = 0;
-                    for (int dy = 0; dy < 2; dy++)
-                        for (int dx = 0; dx < 2; dx++)
-                        {
-                            uint16_t c = src[(by * 2 + dy) * 256 + bx * 2 + dx];
-                            r += c >> 11; g += (c >> 5) & 0x3F; b += c & 0x1F;
-                        }
-                    px[by * 4 + bx] = (uint16_t)(((r / 4) << 11) | ((g / 4) << 5) | (b / 4));
-                }
-            // the 3DS already shows exactly this preview: send it sharp now
-            // (if it does not fit, it follows on the next frames)
-            bool alreadyShown = true;
-            for (int y = 0; y < 8 && alreadyShown; y++)
-                for (int x = 0; x < 8; x++)
-                    if ((sentFrame[base + y * 256 + x] & ~1) != (px[(y >> 1) * 4 + (x >> 1)] & ~1))
-                    { alreadyShown = false; break; }
-            if (alreadyShown) continue;
-            total -= e.size;
-            e.type = LINK_TILE_HALF;
-            e.size = 32;
-            memcpy(e.data, px, 32);
-            total += e.size;
+            EncTile& e = must[i];
+            if (e.level >= level) continue;
+            size_t before = e.size;
+            makeLevel(e, &frame[tileBase(e.t)], level);
+            total = total - before + e.size;
         }
     }
 
-    // pack into packets (whatever still does not fit waits for the next frame)
+    // 2) optional, with what is left: sharpen previews, refresh a few tiles
+    std::vector<EncTile> extra;
+    size_t room = total < budget ? budget - total : 0;
+    std::vector<uint8_t> isRefresh(LINK_TILE_COUNT, 0);
+    for (int i = 0; i < kRefreshPerFrame; i++)
+        isRefresh[(refreshCursor + i) % LINK_TILE_COUNT] = 1;
+    refreshCursor = (refreshCursor + kRefreshPerFrame) % LINK_TILE_COUNT;
+    int lastExtra = -1;
+    for (int i = 0; i < LINK_TILE_COUNT && room > 12; i++)
+    {
+        int t = (int)((scanStart + i) % LINK_TILE_COUNT);
+        if (isMust[t]) continue;
+        if (tileLevel[t] == 0 && !isRefresh[t]) continue;
+        EncTile e;
+        e.t = t;
+        makeLevel(e, &frame[tileBase(t)], 0);
+        if (2 + e.size > room && tileLevel[t] == 2)
+            makeLevel(e, &frame[tileBase(t)], 1);          // at least one step sharper
+        if (2 + e.size > room || (e.level >= tileLevel[t] && !isRefresh[t])) continue;
+        room -= 2 + e.size;
+        extra.push_back(e);
+        lastExtra = t;
+    }
+    if (lastExtra >= 0) scanStart = (uint32_t)((lastExtra + 1) % LINK_TILE_COUNT);
+
+    if (must.empty() && extra.empty()) return;
+
+    // 3) pack: mandatory tiles first, then the extras
     std::vector<std::vector<uint8_t>> packets;
     std::vector<std::vector<uint16_t>> packetTiles;
     std::vector<uint8_t> cur;
     std::vector<uint16_t> curTiles;
     uint16_t curEntries = 0;
-    size_t packed = 0;
-    int lastChanged = -1;
     auto finish = [&]()
     {
         if (!curEntries) return;
@@ -765,12 +799,9 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         curTiles.clear();
         curEntries = 0;
     };
-    for (size_t k = 0; k < enc.size(); k++)
+    auto add = [&](const EncTile& e)
     {
-        Enc& e = enc[k];
         size_t need = 2 + e.size;
-        bool mandatory = forceTile[e.t] != 0;
-        if (!mandatory && packed + need > budget) continue;   // stays different -> next frame
         if (cur.empty()) cur.resize(sizeof(LinkFramePacket));
         if (cur.size() + need > LINK_FRAME_MAX_BYTES)
         {
@@ -784,32 +815,20 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         memcpy(&cur[off + 2], e.data, e.size);
         curEntries++;
         curTiles.push_back((uint16_t)e.t);
-        packed += need;
 
-        // remember what the 3DS will show for this tile
         int base = tileBase(e.t);
-        if (e.type == LINK_TILE_HALF)
-        {
-            const uint16_t* px = (const uint16_t*)e.data;
-            for (int y = 0; y < 8; y++)
-                for (int x = 0; x < 8; x++)
-                    sentFrame[base + y * 256 + x] = px[(y >> 1) * 4 + (x >> 1)];
-            // make sure the exact version follows even if this happens to match
-            if (memcmp(px, &frame[base], 2) == 0) sentFrame[base] ^= 1;
-        }
-        else
-        {
-            for (int y = 0; y < 8; y++)
-                memcpy(&sentFrame[base + y * 256], &frame[base + y * 256], 16);
-        }
-        forceTile[e.t] = 0;
-        lastChanged = e.t;
-    }
+        for (int y = 0; y < 8; y++)
+            memcpy(&shownSource[base + y * 256], &frame[base + y * 256], 16);
+        tileLevel[e.t] = e.level;
+    };
+    for (const EncTile& e : must) add(e);
+    for (const EncTile& e : extra) add(e);
     finish();
     if (packets.empty()) return;
 
-    // continue after the last tile sent next time, so no area starves
-    if (lastChanged >= 0) scanStart = (uint32_t)((lastChanged + 1) % LINK_TILE_COUNT);
+    // everything before baseSeq is confirmed, or lost and repaired by this frame
+    // (processAcks ran just before; lost tiles were mandatory above)
+    uint32_t baseSeq = inFlight.empty() ? videoSeq : inFlight.front().seq;
 
     sockaddr_in to;
     memcpy(&to, videoAddr, sizeof(to));
@@ -823,6 +842,7 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         memcpy(&hdr, pk.data(), sizeof(hdr));
         hdr.frameId = frameId;
         hdr.seq = videoSeq++;
+        hdr.baseSeq = baseSeq;
         hdr.flags = (uint16_t)((i << LINK_FRAME_INDEX_SHIFT) | (i + 1 == packets.size() ? LINK_FRAME_LAST : 0));
         memcpy(pk.data(), &hdr, sizeof(hdr));
         {

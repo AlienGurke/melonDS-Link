@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        4u
+#define LINK_VERSION        5u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -173,10 +173,14 @@ typedef struct LINK_PACKED LinkInputPacket
               pixel x = bits 4x..4x+3                          (64 bytes)
      HALF   : 16 u16 pixels (4x4, row-major), each covering 2x2 pixels.
               Lossy quick preview; the exact tile follows later (32 bytes)
+     QUARTER: 4 u16 pixels (2x2, row-major), each covering 4x4 pixels.
+              Coarsest preview, used only when even HALF does not fit (8 bytes)
 
    Frames: all packets of one update share frameId. `flags` holds the packet
-   index within the frame (bits 1-15) and LINK_FRAME_LAST on the final packet,
-   so the 3DS can show an update only once it is complete. */
+   index within the frame (bits 1-15) and LINK_FRAME_LAST on the final packet.
+   baseSeq: all packets before it were confirmed, or were lost and their tiles
+   are repeated in this frame. So once every packet from baseSeq to the end of
+   this frame has arrived, the 3DS has a consistent picture and may show it. */
 #define LINK_TILE_INDEX_MASK 0x03FFu
 #define LINK_TILE_TYPE_SHIFT 13
 #define LINK_TILE_RAW       0u
@@ -185,6 +189,7 @@ typedef struct LINK_PACKED LinkInputPacket
 #define LINK_TILE_PAL4      3u
 #define LINK_TILE_PAL16     4u
 #define LINK_TILE_HALF      5u
+#define LINK_TILE_QUARTER   6u
 
 #define LINK_FRAME_LAST     1u
 #define LINK_FRAME_INDEX_SHIFT 1
@@ -199,6 +204,8 @@ typedef struct LINK_PACKED LinkFramePacket
     uint32_t magic;
     uint32_t frameId;
     uint32_t seq;          /* increments per packet, for receipts */
+    uint32_t baseSeq;      /* show this frame only if every packet from baseSeq
+                              up to the frame's last packet has arrived */
     uint16_t entryCount;
     uint16_t flags;
     /* followed by entries */
@@ -211,7 +218,7 @@ typedef struct LINK_PACKED LinkFramePacket
 #ifdef __cplusplus
 static_assert(sizeof(LinkHeader) == 16, "LinkHeader size");
 static_assert(sizeof(LinkInputPacket) == 48, "LinkInputPacket size");
-static_assert(sizeof(LinkFramePacket) == 16, "LinkFramePacket size");
+static_assert(sizeof(LinkFramePacket) == 20, "LinkFramePacket size");
 #endif
 
 #endif

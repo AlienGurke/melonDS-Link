@@ -15,11 +15,12 @@ die SD-Karte (Spielstände, später ROMs).
 - *Vergrößert* (Standard): auf den ganzen 3DS-Bildschirm (320×240) skaliert.
 - *Original*: 256×192 Pixel 1:1, mittig – gestochen scharf.
 
-Das Bild wird kachelweise übertragen und mit Farbpaletten komprimiert. Der 3DS
-zeigt ein neues Bild erst, wenn es vollständig angekommen ist, und bestätigt
-empfangene Pakete; verlorene Kacheln schickt melonDS sofort neu. Bei sehr großen
-Wechseln (Überblendungen) kommt das Bild kurz in halber Auflösung und wird
-danach scharf nachgeliefert. Die Datenrate passt sich automatisch ans WLAN an.
+Das Bild wird kachelweise übertragen und mit Farbpaletten komprimiert. Jede
+Änderung wird immer komplett gesendet – passt sie nicht ins Datenbudget, kommt
+sie kurz in halber oder Viertel-Auflösung und wird danach scharf nachgeliefert.
+Der 3DS bestätigt empfangene Pakete; verlorene Kacheln schickt melonDS sofort
+neu. Ein Bild wird erst angezeigt, wenn alles dafür Nötige angekommen ist, so
+gibt es keine halb alten, halb neuen Bilder. Die Datenrate passt sich ans WLAN an.
 
 | 3DS            | melonDS                      |
 |----------------|------------------------------|

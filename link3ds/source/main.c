@@ -395,6 +395,13 @@ static void decodeTile(int type, const u8* p, int tx, int ty)
         }
         break;
     }
+    case LINK_TILE_QUARTER:
+    {
+        u16 px[4]; memcpy(px, p, 8);
+        for (int y = 0; y < 8; y++)
+            for (int x = 0; x < 8; x++) dst[y * 256 + x] = px[(y >> 2) * 2 + (x >> 2)];
+        break;
+    }
     case LINK_TILE_HALF:
     {
         u16 px[16]; memcpy(px, p, 32);
@@ -425,6 +432,7 @@ static int tilePayloadSize(int type)
     case LINK_TILE_PAL4: return 24;
     case LINK_TILE_PAL16: return 64;
     case LINK_TILE_HALF: return 32;
+    case LINK_TILE_QUARTER: return 8;
     default: return -1;
     }
 }
@@ -443,25 +451,51 @@ static void presentFrame(void)
 #endif
 }
 
+/* which packet seqs have arrived (ring, slot holds the seq that filled it) */
+#define SEQ_RING 4096
+static u32 g_seqRing[SEQ_RING];
+static bool g_seqRingInit = false;
+
+static void markReceived(u32 seq)
+{
+    if (!g_seqRingInit)
+    {
+        /* slot i can only ever hold seqs with (seq & mask) == i, so i + 1 means "empty" */
+        for (int i = 0; i < SEQ_RING; i++) g_seqRing[i] = (u32)i + 1;
+        g_seqRingInit = true;
+    }
+    g_seqRing[seq & (SEQ_RING - 1)] = seq;
+}
+
+static bool haveAll(u32 from, u32 to)
+{
+    if ((s32)(to - from) < 0 || to - from >= SEQ_RING) return false;
+    for (u32 s = from; s != to + 1; s++)
+        if (g_seqRing[s & (SEQ_RING - 1)] != s) return false;
+    return true;
+}
+
 static void videoThread(void* arg)
 {
     (void)arg;
     static u8 buf[2048];
     u32 curFrame = 0;
-    bool frameOpen = false;     /* packets of curFrame decoded but not shown */
-    int gotPackets = 0, totalPackets = -1;
-    u64 frameStart = 0;
+    bool frameOpen = false;          /* decoded data not yet shown */
+    bool haveLast = false;
+    u32 lastSeq = 0, baseSeq = 0;
+    u64 lastPresent = 0;
 
     while (g_running)
     {
         ssize_t n = recvfrom(g_videoFd, buf, sizeof(buf), 0, NULL, NULL);
         if (n <= 0)
         {
-            /* the last packet of a frame got lost and nothing new came: show it anyway */
-            if (frameOpen && osGetTime() - frameStart > 50)
+            /* safety net: never freeze, even if consistency cannot be reached */
+            if (frameOpen && osGetTime() - lastPresent > 250)
             {
                 presentFrame();
                 frameOpen = false;
+                lastPresent = osGetTime();
             }
             svcSleepThread(500000); /* 0.5 ms */
             continue;
@@ -473,13 +507,12 @@ static void videoThread(void* arg)
 
         if (fp.frameId != curFrame)
         {
-            /* a newer frame starts: show what we have (lost parts get resent) */
-            if (frameOpen) presentFrame();
+            /* a frame that never became consistent is simply not shown;
+               its lost parts are repeated in a later frame */
             curFrame = fp.frameId;
-            gotPackets = 0;
-            totalPackets = -1;
-            frameStart = osGetTime();
+            haveLast = false;
         }
+        if (lastPresent == 0) lastPresent = osGetTime();
         frameOpen = true;
 
         const u8* p = buf + sizeof(fp);
@@ -498,15 +531,21 @@ static void videoThread(void* arg)
             p += size;
         }
         noteVideoSeq(fp.seq);
+        markReceived(fp.seq);
         g_lastVideoTime = osGetTime();
 
-        gotPackets++;
         if (fp.flags & LINK_FRAME_LAST)
-            totalPackets = (fp.flags >> LINK_FRAME_INDEX_SHIFT) + 1;
-        if (totalPackets > 0 && gotPackets >= totalPackets)
+        {
+            haveLast = true;
+            lastSeq = fp.seq;
+            baseSeq = fp.baseSeq;
+        }
+        if (haveLast && haveAll(baseSeq, lastSeq))
         {
             presentFrame();
             frameOpen = false;
+            haveLast = false;
+            lastPresent = osGetTime();
         }
     }
 }

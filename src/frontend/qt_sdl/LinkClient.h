@@ -106,9 +106,11 @@ private:
     bool framePending = false;
     std::atomic<bool> videoResync { true };  // resend everything (new connection)
     std::thread videoThread;
-    std::vector<uint16_t> sentFrame;        // what was last sent per pixel
-    std::vector<uint16_t> lastFrame;        // for resending while nothing new comes in
-    std::vector<uint8_t> forceTile;         // tiles whose packet got lost -> resend
+    // per tile: which picture content the 3DS shows (exact source pixels) and
+    // in which quality (0 exact, 1 half, 2 quarter, 255 unknown -> resend)
+    std::vector<uint16_t> shownSource;
+    std::vector<uint8_t> tileLevel;
+    std::vector<uint16_t> lastFrame;        // for refining while nothing new comes in
     struct SentPacket { uint32_t seq; int64_t sentMs; std::vector<uint16_t> tiles; };
     std::deque<SentPacket> inFlight;        // sent, not yet confirmed by the 3DS
     uint32_t videoFrameId = 0;
