@@ -15,8 +15,11 @@ def main():
     base = None
     for line in open(path, errors="replace"):
         # MSVC/lld-link style: " 0001:000a1234       ?name@@...    00000001400a2234 f   obj.obj"
-        m = re.match(r"\s*[0-9a-fA-F]{4}:[0-9a-fA-F]{8}\s+(\S+)\s+([0-9a-fA-F]{8,16})\b", line)
+        m = re.match(r"\s*([0-9a-fA-F]{4}):[0-9a-fA-F]{8}\s+(\S+)\s+([0-9a-fA-F]{8,16})\b", line)
+        if m and m.group(1) == "0000":
+            continue    # absolute / linker-defined values, not code
         if m:
+            m = re.match(r"\s*[0-9a-fA-F]{4}:[0-9a-fA-F]{8}\s+(\S+)\s+([0-9a-fA-F]{8,16})\b", line)
             addr = int(m.group(2), 16)
             name = m.group(1)
         else:
