@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        9u
+#define LINK_VERSION        10u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -62,6 +62,12 @@ enum LinkCommand
                                 then LinkDirEntry list of its .nds files */
     LINK_CMD_SETONPC    = 17,/* in: file names (one per line) of the games that are
                                 completely on the PC (marked in the 3DS list) */
+    LINK_CMD_READSTREAMZS=18,/* like READSTREAMZ, but behind the end of the game data
+                                in the DS ROM header, blocks are only spot-checked
+                                (start and end) instead of read: padding is sent as
+                                fill blocks without reading it from the SD card.
+                                One spot check that is not padding switches back to
+                                full reading for the rest of the stream. */
 };
 
 /* send settings of the 3DS (0 = keep the current value) */

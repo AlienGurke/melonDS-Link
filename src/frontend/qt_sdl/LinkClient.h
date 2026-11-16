@@ -94,7 +94,7 @@ public:
     // compressed=true: the 3DS packs the data (LZ4, padding as fill blocks)
     uint64_t ReadStream(const std::string& path, uint64_t offset, uint64_t length,
                         const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok,
-                        bool compressed = true);
+                        bool compressed = true, bool skipPadding = false);
 
     // pure network speed test: the 3DS sends `megabytes` MB from RAM.
     // Returns false on errors; bytesPerSec gets the measured rate.

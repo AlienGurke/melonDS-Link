@@ -59,6 +59,8 @@ std::string human(uint64_t bytes)
 
 }
 
+std::atomic<bool> Session::SkipPadding { false };
+
 Session& Session::Get()
 {
     static Session s;
@@ -402,7 +404,7 @@ std::string Session::CopyRom(const std::string& remotePath, uint64_t size, const
         // picked there), costs only a round trip per piece
         const uint64_t piece = 16ull * 1024 * 1024;
         bool ok = false;
-        c.ReadStream(remotePath, off, std::min<uint64_t>(piece, size - off), sink, ok, true);
+        c.ReadStream(remotePath, off, std::min<uint64_t>(piece, size - off), sink, ok, true, SkipPadding.load());
         wireDone += c.LastStreamWireBytes();
         out.flush();
         if (ok && off < size)
@@ -431,7 +433,8 @@ std::string Session::CopyRom(const std::string& remotePath, uint64_t size, const
                  moved > 0 ? (int)(100 - wireDone * 100 / moved) : 0);
         c.PostMessage(summary);
         Log(std::string(summary + 11) + " (" + romName + ", " + human(size) +
-            (startOff ? ", fortgesetzt ab " + human(startOff) : std::string()) + ")");
+            (startOff ? ", fortgesetzt ab " + human(startOff) : std::string()) +
+            (SkipPadding ? ", Fuellbereich ueberspringen an" : "") + ")");
         std::string st = c.GetStats();
         if (!st.empty()) Log("  3DS: " + st);
     }

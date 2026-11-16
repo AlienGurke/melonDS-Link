@@ -279,7 +279,7 @@ bool Client::Write(const std::string& path, uint64_t offset, const void* data, u
 
 uint64_t Client::ReadStream(const std::string& path, uint64_t offset, uint64_t length,
                             const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok,
-                            bool compressed)
+                            bool compressed, bool skipPadding)
 {
     ok = false;
     lastWireBytes = 0;
@@ -294,7 +294,8 @@ uint64_t Client::ReadStream(const std::string& path, uint64_t offset, uint64_t l
     memcpy(req.data(), &r, sizeof(r));
     memcpy(req.data() + sizeof(r), path.data(), path.size());
 
-    const uint16_t cmd = compressed ? LINK_CMD_READSTREAMZ : LINK_CMD_READSTREAM;
+    // skipPadding: the 3DS only spot-checks the padding behind the game data
+    const uint16_t cmd = !compressed ? LINK_CMD_READSTREAM : skipPadding ? LINK_CMD_READSTREAMZS : LINK_CMD_READSTREAMZ;
     LinkHeader h = {};
     h.magic = LINK_MAGIC;
     h.cmd = cmd;

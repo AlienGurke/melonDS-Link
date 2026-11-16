@@ -367,6 +367,11 @@ static volatile u64 g_streamLeft;
 static volatile bool g_streamStop;
 static volatile bool g_streamCompress;   /* LZ4 on (switched off if it can't keep up) */
 static volatile bool g_streamPack;       /* compressed protocol (fill blocks etc.) */
+static u64 g_streamPos;                  /* file offset of the next block */
+static u64 g_skipFrom = ~0ull;           /* blocks from here on: only spot-checked */
+static int g_skipFill = -1;              /* the padding byte (-1 = not seen yet) */
+static volatile u64 g_statSkipped;       /* bytes not read thanks to that */
+static u8 g_sample[2][0x1000] __attribute__((aligned(0x40)));
 static volatile u32 g_senderStarved;     /* sender had to wait for the reader */
 static LZ4_stream_t g_lz4State;          /* ~16 KB: must not live on a thread stack */
 
@@ -394,12 +399,48 @@ static void streamReader(void* arg)
         if (g_streamState[i] != 0) { svcSleepThread(200000); continue; }   /* wait for the sender */
         if (g_streamLeft == 0) { g_streamState[i] = 2; break; }
         u32 want = g_streamLeft > STREAM_CHUNK ? STREAM_CHUNK : (u32)g_streamLeft;
+
+        /* behind the game data: look at the first and last 4 KB only */
+        if (g_streamPack && g_streamPos >= g_skipFrom && want >= 0x2000)
+        {
+            u64 r0 = svcGetSystemTick();
+            bool pad = fseeko(g_streamFile, (off_t)g_streamPos, SEEK_SET) == 0 &&
+                       fread(g_sample[0], 1, 0x1000, g_streamFile) == 0x1000 &&
+                       fseeko(g_streamFile, (off_t)(g_streamPos + want - 0x1000), SEEK_SET) == 0 &&
+                       fread(g_sample[1], 1, 0x1000, g_streamFile) == 0x1000 &&
+                       isUniform(g_sample[0], 0x1000) && isUniform(g_sample[1], 0x1000) &&
+                       g_sample[0][0] == g_sample[1][0] &&
+                       (g_skipFill < 0 || g_skipFill == g_sample[0][0]);
+            g_statReadTicks += svcGetSystemTick() - r0;
+            if (pad)
+            {
+                g_skipFill = g_sample[0][0];
+                LinkStreamBlock* b = &g_streamHdr[i];
+                memset(b, 0, sizeof(*b));
+                b->rawLen = want;
+                b->mode = LINK_BLOCK_FILL;
+                b->fill = (u8)g_skipFill;
+                g_streamLen[i] = want;
+                g_statSkipped += want;
+                g_streamPos += want;
+                g_streamLeft -= want;
+                if (fseeko(g_streamFile, (off_t)g_streamPos, SEEK_SET) != 0) { g_streamState[i] = 2; g_streamLen[i] = 0; break; }
+                g_streamState[i] = 1;
+                i = (i + 1) % STREAM_BUFS;
+                continue;
+            }
+            /* something else is there: read everything from now on */
+            g_skipFrom = ~0ull;
+            if (fseeko(g_streamFile, (off_t)g_streamPos, SEEK_SET) != 0) { g_streamState[i] = 2; g_streamLen[i] = 0; break; }
+        }
+
         u64 r0 = svcGetSystemTick();
         size_t got = fread(g_streamBuf[i], 1, want, g_streamFile);
         g_statReadTicks += svcGetSystemTick() - r0;
         g_statReadBytes += got;
         if (got != want) { g_streamState[i] = 2; g_streamLen[i] = 0; break; }
         g_streamLen[i] = want;
+        g_streamPos += want;
 
         if (g_streamPack)
         {
@@ -442,7 +483,21 @@ static void streamReader(void* arg)
     }
 }
 
-static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset, u64 length, bool compress)
+/* end of the real data of a DS ROM according to its header (0 = unknown) */
+static u64 ndsDataEnd(FILE* f, u64 size)
+{
+    u8 hdr[0x220];
+    if (fseeko(f, 0, SEEK_SET) != 0 || fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) return 0;
+    u32 ntr, dsi = 0;
+    memcpy(&ntr, hdr + 0x80, 4);           /* used ROM size (DS part) */
+    if (hdr[0x12] & 0x02) memcpy(&dsi, hdr + 0x210, 4);   /* DSi-enhanced: total size */
+    u64 end = (u64)ntr + 0x88;             /* + the signature that may follow */
+    if ((u64)dsi > end) end = dsi;
+    if (ntr < 0x4000 || end > size) return 0;   /* not a sensible header */
+    return end + 0x10000;                  /* a little margin */
+}
+
+static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset, u64 length, bool compress, bool skipPadding)
 {
     FILE* f = fopen(path, "rb");
     if (!f) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
@@ -450,6 +505,14 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     u64 size = (fstat(fileno(f), &st) == 0) ? (u64)st.st_size : 0;
     if (offset > size) offset = size;
     if (length > size - offset) length = size - offset;
+    g_skipFrom = ~0ull;
+    g_skipFill = -1;
+    if (compress && skipPadding)
+    {
+        u64 end = ndsDataEnd(f, size);
+        if (end) g_skipFrom = end;
+    }
+    g_streamPos = offset;
     if (fseeko(f, (off_t)offset, SEEK_SET) != 0) { fclose(f); return sendResponse(fd, h, LINK_ERR_IO, NULL, 0); }
     setvbuf(f, NULL, _IONBF, 0);   /* we read big blocks ourselves */
 
@@ -480,6 +543,7 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     g_statSendSleeps = 0;
     g_statReadTicks = g_statReadBytes = 0;
     g_statPackTicks = g_statPackBytes = 0;
+    g_statSkipped = 0;
 
     u64 len64 = length;
     if (!sendResponse(fd, h, LINK_OK, &len64, sizeof(len64))) { fclose(f); return false; }
@@ -732,13 +796,15 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
 
     case LINK_CMD_READSTREAM:
     case LINK_CMD_READSTREAMZ:
+    case LINK_CMD_READSTREAMZS:
     {
         if (h->len <= sizeof(LinkStreamReq)) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
         LinkStreamReq req;
         memcpy(&req, payload, sizeof(req));
         if (!makeSdPath(path, sizeof(path), (const char*)payload + sizeof(req), h->len - sizeof(req)))
             return sendResponse(fd, h, LINK_ERR_DENIED, NULL, 0);
-        return streamFile(fd, h, path, req.offset, req.length, h->cmd == LINK_CMD_READSTREAMZ);
+        return streamFile(fd, h, path, req.offset, req.length, h->cmd != LINK_CMD_READSTREAM,
+                          h->cmd == LINK_CMD_READSTREAMZS);
     }
 
     case LINK_CMD_SPEEDTEST:
@@ -794,10 +860,10 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
     {
         char txt[256];
         LightLock_Lock(&g_lock);
-        snprintf(txt, sizeof(txt), "%s | %s | Puffer %luK, Stueck %luK, Pause %luus%s",
+        snprintf(txt, sizeof(txt), "%s | %s | Puffer %luK, Stueck %luK, Pause %luus%s | Fuellbereich nicht gelesen: %lu MB",
                  g_xferInfo, g_xferInfo2, (unsigned long)(g_sendBuf / 1024),
                  (unsigned long)(g_sendPiece / 1024), (unsigned long)g_sendSleepUs,
-                 g_sendBlocking ? ", blockierend" : "");
+                 g_sendBlocking ? ", blockierend" : "", (unsigned long)(g_statSkipped >> 20));
         LightLock_Unlock(&g_lock);
         return sendResponse(fd, h, LINK_OK, txt, (uint32_t)strlen(txt));
     }

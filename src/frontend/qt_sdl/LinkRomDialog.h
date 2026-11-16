@@ -16,6 +16,7 @@
 
 #include "LinkSession.h"
 
+class QCheckBox;
 class QLabel;
 class QProgressBar;
 class QPushButton;
@@ -46,6 +47,7 @@ private:
     QLabel* summary;
     QLabel* info;
     QProgressBar* bar;
+    QCheckBox* chkSkip;
     QPushButton* btnRefresh;
     QPushButton* btnCopySel;
     QPushButton* btnCopyAll;

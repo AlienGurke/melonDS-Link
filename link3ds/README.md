@@ -36,6 +36,13 @@ der kopierte Teil bleibt erhalten und wird beim nächsten Mal fortgesetzt (auch 
 Spielstart). Wählt man währenddessen auf dem 3DS ein Spiel, hält das Vorladen an und
 das Spiel geht vor. Während des Kopierens steht der untere 3DS-Bildschirm still.
 
+**Füllbereich überspringen** (Häkchen im selben Fenster, aus = Standard): DS-ROMs sind
+hinter den eigentlichen Spieldaten mit Füllbytes aufgefüllt. Mit Häkchen liest der 3DS
+diesen Bereich nicht mehr von der SD-Karte, sondern prüft nur Anfang und Ende jedes
+256-KB-Blocks. Findet er dort etwas anderes als Füllbytes, liest er ab da wieder alles.
+Nur Daten, die mitten im Füllbereich versteckt sind, würden so übersehen – bei normalen
+ROMs gibt es das nicht. Spart bei einem 512-MB-Spiel etwa 20–30 Sekunden.
+
 **Anzeigemodi** (C-Stick nach oben wechselt, die Wahl wird gespeichert):
 - *Vergrößert* (Standard): auf den ganzen 3DS-Bildschirm (320×240) skaliert.
 - *Original*: 256×192 Pixel 1:1, mittig – gestochen scharf.

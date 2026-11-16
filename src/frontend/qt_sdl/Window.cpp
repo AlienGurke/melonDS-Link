@@ -763,6 +763,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     }
                     Link::Get().SetDefaultTuning(t);
                 }
+                Link::Session::SkipPadding = globalCfg.GetBool("Link.SkipPadding");
                 linkTimer = new QTimer(this);
                 connect(linkTimer, &QTimer::timeout, this, &MainWindow::onLinkTick);
                 linkTimer->start(200);

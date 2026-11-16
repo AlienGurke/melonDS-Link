@@ -4,6 +4,7 @@
 
 #include "LinkRomDialog.h"
 
+#include <QCheckBox>
 #include <QCloseEvent>
 #include <QColor>
 #include <QHBoxLayout>
@@ -19,6 +20,8 @@
 
 #include <algorithm>
 #include <chrono>
+
+#include "Config.h"
 
 namespace
 {
@@ -85,6 +88,18 @@ LinkRomDialog::LinkRomDialog(QWidget* parent) : QDialog(parent)
     bar->setValue(0);
     bar->setVisible(false);
     lay->addWidget(bar);
+
+    chkSkip = new QCheckBox("Fuellbereich ueberspringen (schneller): hinter den Spieldaten liest der 3DS nur Stichproben "
+                            "statt alles. Findet er dort doch etwas, liest er ab da wieder alles.", this);
+    chkSkip->setChecked(Link::Session::SkipPadding.load());
+    connect(chkSkip, &QCheckBox::toggled, this, [](bool on)
+    {
+        Link::Session::SkipPadding = on;
+        Config::Table cfg = Config::GetGlobalTable();
+        cfg.SetBool("Link.SkipPadding", on);
+        Config::Save();
+    });
+    lay->addWidget(chkSkip);
 
     auto* buttons = new QHBoxLayout();
     btnRefresh = new QPushButton("Aktualisieren", this);

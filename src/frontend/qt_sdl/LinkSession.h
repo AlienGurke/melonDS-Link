@@ -74,6 +74,10 @@ public:
     std::string CopyRom(const std::string& remotePath, uint64_t size, const CopyProgress& progress,
                         const std::function<bool()>& keepGoing = nullptr);
 
+    // DS ROMs: don't read the padding behind the game data from the SD card
+    // (only spot checks) - faster, setting "Link.SkipPadding"
+    static std::atomic<bool> SkipPadding;
+
     // counts up whenever a game is picked on the 3DS: a running preload
     // stops then (it can continue later), the game comes first
     uint32_t LaunchCount() const { return launchCount.load(); }
