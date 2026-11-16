@@ -151,6 +151,10 @@ private:
         u32 Attr;
 
         float TextureLayer;
+
+        // range of the vertex texture coordinates (melonDS Link): at high
+        // resolutions pixels at polygon edges must not sample outside of it
+        s32 TexUMin, TexUMax, TexVMin, TexVMax;
     };
 
     int TileSize {};
