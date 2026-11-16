@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -84,6 +85,12 @@ public:
     bool Write(const std::string& path, uint64_t offset, const void* data, uint32_t length, bool create);
     bool SetStatusText(const std::string& text);
     bool Replace(const std::string& from, const std::string& to);
+
+    // read a big file as one continuous stream; `sink` gets the data piece by
+    // piece and may return false to cancel. Returns the number of bytes
+    // received (on failure: what arrived before the error, to resume from).
+    uint64_t ReadStream(const std::string& path, uint64_t offset, uint64_t length,
+                        const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok);
 
     // a game the user picked on the 3DS (fetched in the background)
     bool TakeLaunchRequest(LaunchRequest& out);

@@ -199,6 +199,8 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
         prepDone = true;
     };
 
+    double lastRate = 0;
+
     // 1) ROM: use the cached copy if it has the right size, otherwise copy it once
     QDir().mkpath(q(RomCacheDir()));
     std::string localRom = RomCacheDir() + "/" + romName;
@@ -218,20 +220,12 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
         progressTotal = size;
         auto t0 = std::chrono::steady_clock::now();
         auto lastStatus = t0 - std::chrono::seconds(1);
-        std::vector<uint8_t> chunk;
-        for (uint64_t off = 0; off < size; )
+        uint64_t off = 0;
+        auto sink = [&](const uint8_t* data, size_t n) -> bool
         {
-            if (cancel) { out.close(); QFile::remove(part); return fail("Abgebrochen"); }
-            uint32_t want = (uint32_t)std::min<uint64_t>(LINK_MAX_PAYLOAD, size - off);
-            bool ok = false;
-            for (int attempt = 0; attempt < 5 && !ok && !cancel; attempt++)
-            {
-                ok = c.Read(req.romPath, off, want, chunk) && chunk.size() == want;
-                if (!ok) std::this_thread::sleep_for(std::chrono::milliseconds(500 * (attempt + 1)));
-            }
-            if (!ok) { out.close(); QFile::remove(part); return fail("Verbindung verloren beim Uebertragen der ROM"); }
-            out.write((const char*)chunk.data(), want);
-            off += want;
+            if (cancel) return false;
+            if (out.write((const char*)data, (qint64)n) != (qint64)n) return false;
+            off += n;
             progressCur = off;
 
             auto now = std::chrono::steady_clock::now();
@@ -245,12 +239,35 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
                 std::lock_guard<std::mutex> lock(prepMutex);
                 prepLabel = label;
             }
-            if (now - lastStatus > std::chrono::milliseconds(700))
+            lastRate = rate;
+            return true;
+        };
+
+        // one continuous stream; after a hiccup continue where it stopped
+        int failures = 0;
+        while (off < size)
+        {
+            if (cancel) { out.close(); QFile::remove(part); return fail("Abgebrochen"); }
+            if (c.GetState() != State::Connected)
+            {
+                if (++failures > 30) { out.close(); QFile::remove(part); return fail("Verbindung verloren beim Uebertragen der ROM"); }
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
+            }
+            // the 3DS status line (sent between streams would block it; tell it once)
+            if (std::chrono::steady_clock::now() - lastStatus > std::chrono::seconds(5))
             {
                 char st[64];
-                snprintf(st, sizeof(st), "ROM wird kopiert: %d%% (noch %d:%02d)", (int)(off * 100 / size), eta / 60, eta % 60);
+                snprintf(st, sizeof(st), "ROM wird kopiert: %d%%", (int)(off * 100 / size));
                 c.SetStatusText(st);
-                lastStatus = now;
+                lastStatus = std::chrono::steady_clock::now();
+            }
+            bool ok = false;
+            c.ReadStream(req.romPath, off, size - off, sink, ok);
+            if (!ok && off < size && !cancel)
+            {
+                if (++failures > 30) { out.close(); QFile::remove(part); return fail("Verbindung verloren beim Uebertragen der ROM"); }
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
             }
         }
         out.close();

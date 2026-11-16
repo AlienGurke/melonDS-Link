@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -55,7 +56,14 @@ static bool sendAll(int fd, const void* buf, size_t len)
         ssize_t n = send(fd, p, len, 0);
         if (n < 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { svcSleepThread(1000000); continue; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                /* wait until there is room again - no fixed sleep, that capped the speed */
+                struct pollfd pf = { .fd = fd, .events = POLLOUT, .revents = 0 };
+                if (!g_running) return false;
+                poll(&pf, 1, 100);
+                continue;
+            }
             return false;
         }
         if (n == 0) return false;
@@ -74,7 +82,12 @@ static bool recvAll(int fd, void* buf, size_t len)
         ssize_t n = recv(fd, p, len, 0);
         if (n < 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { svcSleepThread(1000000); continue; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                struct pollfd pf = { .fd = fd, .events = POLLIN, .revents = 0 };
+                poll(&pf, 1, 100);
+                continue;
+            }
             return false;
         }
         if (n == 0) return false;
@@ -296,6 +309,83 @@ static void requestLaunch(int idx)
 static uint8_t* g_payload;   /* LINK_MAX_PAYLOAD + header space */
 static uint8_t* g_outbuf;    /* LINK_MAX_PAYLOAD */
 
+/* ------------------------------------------------------------------ */
+/* streaming big files: a reader thread fills buffers from the SD card  */
+/* while the server thread sends the previous one                       */
+
+#define STREAM_BUFS 3
+#define STREAM_CHUNK (256 * 1024)
+static u8* g_streamBuf[STREAM_BUFS];
+static volatile u32 g_streamLen[STREAM_BUFS];
+static volatile int g_streamState[STREAM_BUFS];   /* 0 empty, 1 full, 2 end/error */
+static FILE* g_streamFile;
+static volatile u64 g_streamLeft;
+static volatile bool g_streamStop;
+
+static void streamReader(void* arg)
+{
+    (void)arg;
+    int i = 0;
+    while (!g_streamStop)
+    {
+        if (g_streamState[i] != 0) { svcSleepThread(200000); continue; }   /* wait for the sender */
+        if (g_streamLeft == 0) { g_streamState[i] = 2; break; }
+        u32 want = g_streamLeft > STREAM_CHUNK ? STREAM_CHUNK : (u32)g_streamLeft;
+        size_t got = fread(g_streamBuf[i], 1, want, g_streamFile);
+        if (got != want) { g_streamState[i] = 2; g_streamLen[i] = 0; break; }
+        g_streamLen[i] = want;
+        g_streamLeft -= want;
+        g_streamState[i] = 1;
+        i = (i + 1) % STREAM_BUFS;
+    }
+}
+
+static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset, u64 length)
+{
+    FILE* f = fopen(path, "rb");
+    if (!f) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
+    struct stat st;
+    u64 size = (fstat(fileno(f), &st) == 0) ? (u64)st.st_size : 0;
+    if (offset > size) offset = size;
+    if (length > size - offset) length = size - offset;
+    if (fseeko(f, (off_t)offset, SEEK_SET) != 0) { fclose(f); return sendResponse(fd, h, LINK_ERR_IO, NULL, 0); }
+    setvbuf(f, NULL, _IONBF, 0);   /* we read big blocks ourselves */
+
+    if (!g_streamBuf[0])
+        for (int i = 0; i < STREAM_BUFS; i++) g_streamBuf[i] = (u8*)memalign(0x1000, STREAM_CHUNK);
+    for (int i = 0; i < STREAM_BUFS; i++) { g_streamState[i] = 0; g_streamLen[i] = 0; }
+    g_streamFile = f;
+    g_streamLeft = length;
+    g_streamStop = false;
+
+    u64 len64 = length;
+    if (!sendResponse(fd, h, LINK_OK, &len64, sizeof(len64))) { fclose(f); return false; }
+
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    Thread rd = threadCreate(streamReader, NULL, 0x2000, prio, -2, false);
+
+    bool ok = true;
+    u64 sent = 0;
+    int i = 0;
+    while (sent < length && ok && g_running)
+    {
+        if (g_streamState[i] == 0) { svcSleepThread(200000); continue; }
+        if (g_streamState[i] == 2) { ok = false; break; }           /* SD read error */
+        ok = sendAll(fd, g_streamBuf[i], g_streamLen[i]);
+        sent += g_streamLen[i];
+        g_streamState[i] = 0;
+        i = (i + 1) % STREAM_BUFS;
+    }
+    g_streamStop = true;
+    threadJoin(rd, U64_MAX);
+    threadFree(rd);
+    fclose(f);
+    /* on an error mid-stream the framing is broken: closing the connection
+       (returning false) makes the PC retry from where it got to */
+    return ok && sent == length;
+}
+
 static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
 {
     char path[LINK_MAX_PATH + 8];
@@ -455,6 +545,16 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         return sendResponse(fd, h, LINK_OK, g_outbuf, used);
     }
 
+    case LINK_CMD_READSTREAM:
+    {
+        if (h->len <= sizeof(LinkStreamReq)) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
+        LinkStreamReq req;
+        memcpy(&req, payload, sizeof(req));
+        if (!makeSdPath(path, sizeof(path), (const char*)payload + sizeof(req), h->len - sizeof(req)))
+            return sendResponse(fd, h, LINK_ERR_DENIED, NULL, 0);
+        return streamFile(fd, h, path, req.offset, req.length);
+    }
+
     case LINK_CMD_REPLACE:
     {
         /* replace `to` with `from`, keeping the old file until the new one is in place */
@@ -512,6 +612,11 @@ static void serverThread(void* arg)
         /* non-blocking, so quitting never hangs in recv(); recvAll/sendAll poll */
         int flags = fcntl(fd, F_GETFL, 0);
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        {
+            int buf = 256 * 1024;   /* keep the WiFi busy while we refill */
+            setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
+            setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof(buf));
+        }
 
         LightLock_Lock(&g_lock);
         snprintf(g_peerName, sizeof(g_peerName), "%s", inet_ntoa(peer.sin_addr));

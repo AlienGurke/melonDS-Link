@@ -276,6 +276,61 @@ bool Client::Write(const std::string& path, uint64_t offset, const void* data, u
     return status == LINK_OK;
 }
 
+uint64_t Client::ReadStream(const std::string& path, uint64_t offset, uint64_t length,
+                            const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok)
+{
+    ok = false;
+    std::lock_guard<std::mutex> lock(reqMutex);   // the connection is ours until the end
+    if (tcpSock == -1) return 0;
+    sock_t s = (sock_t)tcpSock;
+
+    std::vector<uint8_t> req(sizeof(LinkStreamReq) + path.size());
+    LinkStreamReq r = {};
+    r.offset = offset;
+    r.length = length;
+    memcpy(req.data(), &r, sizeof(r));
+    memcpy(req.data() + sizeof(r), path.data(), path.size());
+
+    LinkHeader h = {};
+    h.magic = LINK_MAGIC;
+    h.cmd = LINK_CMD_READSTREAM;
+    h.seq = seq++;
+    h.len = (uint32_t)req.size();
+
+    uint64_t got = 0;
+    LinkHeader resp = {};
+    uint64_t total = 0;
+    std::vector<uint8_t> buf(1024 * 1024);
+    if (!sendAll(s, &h, sizeof(h)) || !sendAll(s, req.data(), req.size())) goto broken;
+    if (!recvAll(s, &resp, sizeof(resp)) || resp.magic != LINK_MAGIC || resp.seq != h.seq ||
+        resp.cmd != (LINK_CMD_READSTREAM | LINK_RESP))
+        goto broken;
+    if (resp.status != LINK_OK)
+    {
+        if (resp.len) { std::vector<uint8_t> junk(resp.len); recvAll(s, junk.data(), resp.len); }
+        return 0;
+    }
+    if (resp.len != sizeof(total) || !recvAll(s, &total, sizeof(total))) goto broken;
+
+    while (got < total)
+    {
+        if (!waitSock(s, 0, 10000)) goto broken;
+        size_t want = (size_t)std::min<uint64_t>(buf.size(), total - got);
+        int n = recv(s, (char*)buf.data(), (int)want, 0);
+        if (n <= 0) goto broken;
+        got += (uint64_t)n;
+        if (!sink(buf.data(), (size_t)n)) goto broken;   // cancelled: the stream must be dropped
+    }
+    ok = true;
+    return got;
+
+broken:
+    // the stream can't be resumed on this connection; the worker reconnects
+    closesock(s);
+    tcpSock = -1;
+    return got;
+}
+
 bool Client::Replace(const std::string& from, const std::string& to)
 {
     std::vector<uint8_t> req(2 + from.size() + to.size());
@@ -360,6 +415,8 @@ void Client::worker(std::string host)
         }
         int one = 1;
         setsockopt(ts, IPPROTO_TCP, TCP_NODELAY, (const char*)&one, sizeof(one));
+        int rcvbuf = 1024 * 1024;
+        setsockopt(ts, SOL_SOCKET, SO_RCVBUF, (const char*)&rcvbuf, sizeof(rcvbuf));
 
         {
             std::lock_guard<std::mutex> lock(reqMutex);

@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        6u
+#define LINK_VERSION        7u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -45,6 +45,10 @@ enum LinkCommand
     LINK_CMD_POLLEVENT  = 9, /* in: -   out: LinkEvent + paths, or LINK_ERR_NOTFOUND */
     LINK_CMD_REPLACE    = 10,/* in: u16 fromLen + from + to: atomically replace `to`
                                 with `from` (to may exist)  out: -                */
+    LINK_CMD_READSTREAM = 11,/* in: LinkStreamReq + path   out: u64 length, then
+                                exactly that many raw bytes right after the
+                                response (outside the normal framing). Used for
+                                big files: no per-chunk round trips. */
 };
 
 /* Events the 3DS has for melonDS (fetched with LINK_CMD_POLLEVENT) */
@@ -101,6 +105,13 @@ typedef struct LINK_PACKED LinkReadReq
     uint32_t length;   /* <= LINK_MAX_PAYLOAD */
     /* followed by path (no terminator needed, length = header.len - 12) */
 } LinkReadReq;
+
+typedef struct LINK_PACKED LinkStreamReq
+{
+    uint64_t offset;
+    uint64_t length;   /* clamped to the file size by the 3DS */
+    /* followed by path */
+} LinkStreamReq;
 
 typedef struct LINK_PACKED LinkWriteReq
 {
