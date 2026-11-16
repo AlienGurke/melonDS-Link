@@ -58,5 +58,9 @@ automatisch (Workflow „3DS (melonDS Link)“).
 
 Einstellungen: `sd:/3ds/melonDS-Link.cfg`.
 
+ROMs werden komprimiert übertragen (LZ4, leere Füllbereiche als Marker); der
+Fortschritt zeigt, wie viel das spart. LZ4 © Yann Collet, BSD-2-Lizenz
+(`src/frontend/qt_sdl/lz4/LICENSE`).
+
 Protokoll: `src/frontend/qt_sdl/LinkProto.h` (TCP 6543, UDP 6544 Eingaben, UDP 6545 Bild).
 PC-App und 3DS-App müssen dieselbe Protokollversion haben.

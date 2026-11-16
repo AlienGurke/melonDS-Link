@@ -12,6 +12,7 @@ set(SOURCES_QT_SDL
     EmuInstanceInput.cpp
     LinkClient.cpp
     LinkSession.cpp
+    lz4/lz4.c
     EmuThread.cpp
     CheatImportDialog.cpp
     CheatsDialog.cpp

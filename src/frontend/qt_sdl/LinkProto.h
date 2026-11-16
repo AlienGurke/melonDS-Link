@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        7u
+#define LINK_VERSION        8u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -49,6 +49,9 @@ enum LinkCommand
                                 exactly that many raw bytes right after the
                                 response (outside the normal framing). Used for
                                 big files: no per-chunk round trips. */
+    LINK_CMD_READSTREAMZ= 12,/* like READSTREAM, but after the u64 length the
+                                data comes as LinkStreamBlock + payload pieces
+                                (LZ4-compressed, a fill byte, or raw) */
 };
 
 /* Events the 3DS has for melonDS (fetched with LINK_CMD_POLLEVENT) */
@@ -112,6 +115,21 @@ typedef struct LINK_PACKED LinkStreamReq
     uint64_t length;   /* clamped to the file size by the 3DS */
     /* followed by path */
 } LinkStreamReq;
+
+/* one piece of a compressed stream (LINK_CMD_READSTREAMZ) */
+typedef struct LINK_PACKED LinkStreamBlock
+{
+    uint32_t rawLen;    /* bytes this block stands for */
+    uint32_t encLen;    /* payload bytes that follow (0 for FILL) */
+    uint8_t  mode;      /* LINK_BLOCK_* */
+    uint8_t  fill;      /* the byte value for LINK_BLOCK_FILL */
+    uint16_t reserved;
+} LinkStreamBlock;
+
+#define LINK_BLOCK_RAW   0u
+#define LINK_BLOCK_LZ4   1u
+#define LINK_BLOCK_FILL  2u   /* rawLen times the same byte (padding) */
+#define LINK_STREAM_BLOCK_SIZE (256u * 1024u)
 
 typedef struct LINK_PACKED LinkWriteReq
 {
@@ -248,6 +266,7 @@ typedef struct LINK_PACKED LinkFramePacket
 static_assert(sizeof(LinkHeader) == 16, "LinkHeader size");
 static_assert(sizeof(LinkInputPacket) == 48, "LinkInputPacket size");
 static_assert(sizeof(LinkFramePacket) == 20, "LinkFramePacket size");
+static_assert(sizeof(LinkStreamBlock) == 12, "LinkStreamBlock size");
 #endif
 
 #endif

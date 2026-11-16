@@ -89,8 +89,13 @@ public:
     // read a big file as one continuous stream; `sink` gets the data piece by
     // piece and may return false to cancel. Returns the number of bytes
     // received (on failure: what arrived before the error, to resume from).
+    // compressed=true: the 3DS packs the data (LZ4, padding as fill blocks)
     uint64_t ReadStream(const std::string& path, uint64_t offset, uint64_t length,
-                        const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok);
+                        const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok,
+                        bool compressed = true);
+
+    // bytes that actually went over the WiFi during the last ReadStream
+    uint64_t LastStreamWireBytes() const { return lastWireBytes.load(); }
 
     // a game the user picked on the 3DS (fetched in the background)
     bool TakeLaunchRequest(LaunchRequest& out);
@@ -154,6 +159,8 @@ private:
     void processAcks();
     uint8_t videoAddr[16] = {};             // sockaddr_in of the 3DS video port
     std::atomic<bool> haveVideoAddr { false };
+
+    std::atomic<uint64_t> lastWireBytes { 0 };
 
     std::mutex reqMutex;   // serialises Request()
     intptr_t tcpSock = -1;

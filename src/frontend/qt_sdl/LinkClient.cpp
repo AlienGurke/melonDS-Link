@@ -3,6 +3,7 @@
 */
 
 #include "LinkClient.h"
+#include "lz4/lz4.h"
 
 #include <algorithm>
 #include <chrono>
@@ -277,9 +278,11 @@ bool Client::Write(const std::string& path, uint64_t offset, const void* data, u
 }
 
 uint64_t Client::ReadStream(const std::string& path, uint64_t offset, uint64_t length,
-                            const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok)
+                            const std::function<bool(const uint8_t*, size_t)>& sink, bool& ok,
+                            bool compressed)
 {
     ok = false;
+    lastWireBytes = 0;
     std::lock_guard<std::mutex> lock(reqMutex);   // the connection is ours until the end
     if (tcpSock == -1) return 0;
     sock_t s = (sock_t)tcpSock;
@@ -291,19 +294,20 @@ uint64_t Client::ReadStream(const std::string& path, uint64_t offset, uint64_t l
     memcpy(req.data(), &r, sizeof(r));
     memcpy(req.data() + sizeof(r), path.data(), path.size());
 
+    const uint16_t cmd = compressed ? LINK_CMD_READSTREAMZ : LINK_CMD_READSTREAM;
     LinkHeader h = {};
     h.magic = LINK_MAGIC;
-    h.cmd = LINK_CMD_READSTREAM;
+    h.cmd = cmd;
     h.seq = seq++;
     h.len = (uint32_t)req.size();
 
-    uint64_t got = 0;
+    uint64_t got = 0, wire = 0;
     LinkHeader resp = {};
     uint64_t total = 0;
-    std::vector<uint8_t> buf(1024 * 1024);
+    std::vector<uint8_t> buf(1024 * 1024), raw;
     if (!sendAll(s, &h, sizeof(h)) || !sendAll(s, req.data(), req.size())) goto broken;
     if (!recvAll(s, &resp, sizeof(resp)) || resp.magic != LINK_MAGIC || resp.seq != h.seq ||
-        resp.cmd != (LINK_CMD_READSTREAM | LINK_RESP))
+        resp.cmd != (cmd | LINK_RESP))
         goto broken;
     if (resp.status != LINK_OK)
     {
@@ -312,14 +316,49 @@ uint64_t Client::ReadStream(const std::string& path, uint64_t offset, uint64_t l
     }
     if (resp.len != sizeof(total) || !recvAll(s, &total, sizeof(total))) goto broken;
 
-    while (got < total)
+    if (!compressed)
     {
-        if (!waitSock(s, 0, 10000)) goto broken;
-        size_t want = (size_t)std::min<uint64_t>(buf.size(), total - got);
-        int n = recv(s, (char*)buf.data(), (int)want, 0);
-        if (n <= 0) goto broken;
-        got += (uint64_t)n;
-        if (!sink(buf.data(), (size_t)n)) goto broken;   // cancelled: the stream must be dropped
+        while (got < total)
+        {
+            if (!waitSock(s, 0, 10000)) goto broken;
+            size_t want = (size_t)std::min<uint64_t>(buf.size(), total - got);
+            int n = recv(s, (char*)buf.data(), (int)want, 0);
+            if (n <= 0) goto broken;
+            got += (uint64_t)n;
+            wire += (uint64_t)n;
+            lastWireBytes = wire;
+            if (!sink(buf.data(), (size_t)n)) goto broken;   // cancelled: the stream must be dropped
+        }
+    }
+    else
+    {
+        raw.resize(LINK_STREAM_BLOCK_SIZE);
+        while (got < total)
+        {
+            LinkStreamBlock b;
+            if (!recvAll(s, &b, sizeof(b))) goto broken;
+            if (b.rawLen == 0 || b.rawLen > LINK_STREAM_BLOCK_SIZE || b.rawLen > total - got) goto broken;
+            wire += sizeof(b);
+            if (b.mode == LINK_BLOCK_FILL)
+            {
+                memset(raw.data(), b.fill, b.rawLen);
+            }
+            else if (b.mode == LINK_BLOCK_RAW)
+            {
+                if (b.encLen != b.rawLen || !recvAll(s, raw.data(), b.rawLen)) goto broken;
+            }
+            else if (b.mode == LINK_BLOCK_LZ4)
+            {
+                if (b.encLen == 0 || b.encLen > buf.size() || !recvAll(s, buf.data(), b.encLen)) goto broken;
+                int n = LZ4_decompress_safe((const char*)buf.data(), (char*)raw.data(), (int)b.encLen, (int)b.rawLen);
+                if (n != (int)b.rawLen) goto broken;
+            }
+            else goto broken;
+            wire += b.encLen;
+            lastWireBytes = wire;
+            got += b.rawLen;
+            if (!sink(raw.data(), b.rawLen)) goto broken;
+        }
     }
     ok = true;
     return got;

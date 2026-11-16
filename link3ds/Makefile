@@ -33,9 +33,9 @@ include $(DEVKITARM)/3ds_rules
 #---------------------------------------------------------------------------------
 TARGET		:=	melonDS-Link
 BUILD		:=	build
-SOURCES		:=	source
+SOURCES		:=	source ../src/frontend/qt_sdl/lz4
 DATA		:=	data
-INCLUDES	:=	include ../src/frontend/qt_sdl
+INCLUDES	:=	include ../src/frontend/qt_sdl ../src/frontend/qt_sdl/lz4
 GRAPHICS	:=	gfx
 GFXBUILD	:=	$(BUILD)
 APP_TITLE	:=	melonDS Link

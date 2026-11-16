@@ -221,6 +221,7 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
         auto t0 = std::chrono::steady_clock::now();
         auto lastStatus = t0 - std::chrono::seconds(1);
         uint64_t off = 0;
+        uint64_t wireDone = 0;   // bytes over the WiFi in earlier (interrupted) streams
         auto sink = [&](const uint8_t* data, size_t n) -> bool
         {
             if (cancel) return false;
@@ -233,8 +234,11 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
             double rate = secs > 0 ? off / secs : 0;
             int eta = rate > 0 ? (int)((size - off) / rate) : 0;
             char label[256];
-            snprintf(label, sizeof(label), "ROM wird vom 3DS kopiert (nur beim ersten Mal):\n%s\n%s von %s  -  %s/s  -  noch ca. %d:%02d",
-                     game.c_str(), human(off).c_str(), human(size).c_str(), human((uint64_t)rate).c_str(), eta / 60, eta % 60);
+            uint64_t wireNow = wireDone + c.LastStreamWireBytes();
+            double wireRate = secs > 0 ? wireNow / secs : 0;
+            snprintf(label, sizeof(label), "ROM wird vom 3DS kopiert (nur beim ersten Mal):\n%s\n%s von %s  -  %s/s  -  noch ca. %d:%02d\nWLAN: %s/s, Kompression spart %d%%",
+                     game.c_str(), human(off).c_str(), human(size).c_str(), human((uint64_t)rate).c_str(), eta / 60, eta % 60,
+                     human((uint64_t)wireRate).c_str(), off > 0 ? (int)(100 - wireNow * 100 / off) : 0);
             {
                 std::lock_guard<std::mutex> lock(prepMutex);
                 prepLabel = label;
@@ -263,7 +267,8 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
                 lastStatus = std::chrono::steady_clock::now();
             }
             bool ok = false;
-            c.ReadStream(req.romPath, off, size - off, sink, ok);
+            c.ReadStream(req.romPath, off, size - off, sink, ok, true);
+            wireDone += c.LastStreamWireBytes();
             if (!ok && off < size && !cancel)
             {
                 if (++failures > 30) { out.close(); QFile::remove(part); return fail("Verbindung verloren beim Uebertragen der ROM"); }

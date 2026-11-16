@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include "LinkProto.h"
+#include "lz4.h"
 
 #define SOC_ALIGN       0x1000
 #define SOC_BUFFERSIZE  0x100000
@@ -314,13 +315,27 @@ static uint8_t* g_outbuf;    /* LINK_MAX_PAYLOAD */
 /* while the server thread sends the previous one                       */
 
 #define STREAM_BUFS 3
-#define STREAM_CHUNK (256 * 1024)
-static u8* g_streamBuf[STREAM_BUFS];
+#define STREAM_CHUNK LINK_STREAM_BLOCK_SIZE
+static u8* g_streamBuf[STREAM_BUFS];               /* raw data from the SD card */
+static u8* g_streamEnc[STREAM_BUFS];               /* LZ4 output */
+static LinkStreamBlock g_streamHdr[STREAM_BUFS];   /* how block i is sent (compressed mode) */
 static volatile u32 g_streamLen[STREAM_BUFS];
-static volatile int g_streamState[STREAM_BUFS];   /* 0 empty, 1 full, 2 end/error */
+static volatile int g_streamState[STREAM_BUFS];    /* 0 empty, 1 full, 2 end/error */
 static FILE* g_streamFile;
 static volatile u64 g_streamLeft;
 static volatile bool g_streamStop;
+static volatile bool g_streamCompress;
+
+/* one value repeated over the whole block (cartridge padding)? */
+static bool isUniform(const u8* p, u32 n)
+{
+    const u32* w = (const u32*)p;
+    u32 first = w[0];
+    if ((first & 0xFF) * 0x01010101u != first) return false;
+    for (u32 i = 1; i < n / 4; i++) if (w[i] != first) return false;
+    for (u32 i = n & ~3u; i < n; i++) if (p[i] != p[0]) return false;
+    return true;
+}
 
 static void streamReader(void* arg)
 {
@@ -334,13 +349,41 @@ static void streamReader(void* arg)
         size_t got = fread(g_streamBuf[i], 1, want, g_streamFile);
         if (got != want) { g_streamState[i] = 2; g_streamLen[i] = 0; break; }
         g_streamLen[i] = want;
+
+        if (g_streamCompress)
+        {
+            LinkStreamBlock* b = &g_streamHdr[i];
+            memset(b, 0, sizeof(*b));
+            b->rawLen = want;
+            if (isUniform(g_streamBuf[i], want))
+            {
+                b->mode = LINK_BLOCK_FILL;
+                b->fill = g_streamBuf[i][0];
+            }
+            else
+            {
+                int enc = LZ4_compress_default((const char*)g_streamBuf[i], (char*)g_streamEnc[i],
+                                               (int)want, LZ4_compressBound(STREAM_CHUNK));
+                if (enc > 0 && (u32)enc < want - want / 32)
+                {
+                    b->mode = LINK_BLOCK_LZ4;
+                    b->encLen = (u32)enc;
+                }
+                else
+                {
+                    b->mode = LINK_BLOCK_RAW;   /* already compressed data: send as is */
+                    b->encLen = want;
+                }
+            }
+        }
+
         g_streamLeft -= want;
         g_streamState[i] = 1;
         i = (i + 1) % STREAM_BUFS;
     }
 }
 
-static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset, u64 length)
+static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset, u64 length, bool compress)
 {
     FILE* f = fopen(path, "rb");
     if (!f) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
@@ -353,17 +396,30 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
 
     if (!g_streamBuf[0])
         for (int i = 0; i < STREAM_BUFS; i++) g_streamBuf[i] = (u8*)memalign(0x1000, STREAM_CHUNK);
+    if (compress && !g_streamEnc[0])
+        for (int i = 0; i < STREAM_BUFS; i++) g_streamEnc[i] = (u8*)memalign(0x1000, LZ4_compressBound(STREAM_CHUNK));
+    if (!g_streamBuf[STREAM_BUFS - 1] || (compress && !g_streamEnc[STREAM_BUFS - 1]))
+    {
+        fclose(f);
+        return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
+    }
     for (int i = 0; i < STREAM_BUFS; i++) { g_streamState[i] = 0; g_streamLen[i] = 0; }
     g_streamFile = f;
     g_streamLeft = length;
     g_streamStop = false;
+    g_streamCompress = compress;
 
     u64 len64 = length;
     if (!sendResponse(fd, h, LINK_OK, &len64, sizeof(len64))) { fclose(f); return false; }
 
+    /* on a New 3DS the reading/compressing runs on its own CPU core */
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    Thread rd = threadCreate(streamReader, NULL, 0x2000, prio, -2, false);
+    bool isNew = false;
+    APT_CheckNew3DS(&isNew);
+    Thread rd = NULL;
+    if (isNew) rd = threadCreate(streamReader, NULL, 0x4000, prio, 2, false);
+    if (!rd) rd = threadCreate(streamReader, NULL, 0x4000, prio, -2, false);
 
     bool ok = true;
     u64 sent = 0;
@@ -372,7 +428,14 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     {
         if (g_streamState[i] == 0) { svcSleepThread(200000); continue; }
         if (g_streamState[i] == 2) { ok = false; break; }           /* SD read error */
-        ok = sendAll(fd, g_streamBuf[i], g_streamLen[i]);
+        if (compress)
+        {
+            LinkStreamBlock* b = &g_streamHdr[i];
+            ok = sendAll(fd, b, sizeof(*b));
+            if (ok && b->mode == LINK_BLOCK_LZ4) ok = sendAll(fd, g_streamEnc[i], b->encLen);
+            else if (ok && b->mode == LINK_BLOCK_RAW) ok = sendAll(fd, g_streamBuf[i], b->encLen);
+        }
+        else ok = sendAll(fd, g_streamBuf[i], g_streamLen[i]);
         sent += g_streamLen[i];
         g_streamState[i] = 0;
         i = (i + 1) % STREAM_BUFS;
@@ -546,13 +609,14 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
     }
 
     case LINK_CMD_READSTREAM:
+    case LINK_CMD_READSTREAMZ:
     {
         if (h->len <= sizeof(LinkStreamReq)) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
         LinkStreamReq req;
         memcpy(&req, payload, sizeof(req));
         if (!makeSdPath(path, sizeof(path), (const char*)payload + sizeof(req), h->len - sizeof(req)))
             return sendResponse(fd, h, LINK_ERR_DENIED, NULL, 0);
-        return streamFile(fd, h, path, req.offset, req.length);
+        return streamFile(fd, h, path, req.offset, req.length, h->cmd == LINK_CMD_READSTREAMZ);
     }
 
     case LINK_CMD_REPLACE:
