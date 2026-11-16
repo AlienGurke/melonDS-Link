@@ -319,6 +319,9 @@ static uint8_t* g_outbuf;    /* LINK_MAX_PAYLOAD */
 
 #define STREAM_BUFS 3
 #define STREAM_CHUNK LINK_STREAM_BLOCK_SIZE
+/* both buffers keep STREAM_HDR bytes free in front of the data, so the
+   block header and the data go out in a single send */
+#define STREAM_HDR 16
 static u8* g_streamBuf[STREAM_BUFS];               /* raw data from the SD card */
 static u8* g_streamEnc[STREAM_BUFS];               /* LZ4 output */
 static LinkStreamBlock g_streamHdr[STREAM_BUFS];   /* how block i is sent (compressed mode) */
@@ -409,9 +412,17 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     setvbuf(f, NULL, _IONBF, 0);   /* we read big blocks ourselves */
 
     if (!g_streamBuf[0])
-        for (int i = 0; i < STREAM_BUFS; i++) g_streamBuf[i] = (u8*)memalign(0x1000, STREAM_CHUNK);
+        for (int i = 0; i < STREAM_BUFS; i++)
+        {
+            u8* m = (u8*)memalign(0x1000, STREAM_CHUNK + 0x1000);
+            g_streamBuf[i] = m ? m + 0x1000 : NULL;   /* room for the header in front */
+        }
     if (compress && !g_streamEnc[0])
-        for (int i = 0; i < STREAM_BUFS; i++) g_streamEnc[i] = (u8*)memalign(0x1000, LZ4_compressBound(STREAM_CHUNK));
+        for (int i = 0; i < STREAM_BUFS; i++)
+        {
+            u8* m = (u8*)memalign(0x1000, LZ4_compressBound(STREAM_CHUNK) + 0x1000);
+            g_streamEnc[i] = m ? m + 0x1000 : NULL;
+        }
     if (!g_streamBuf[STREAM_BUFS - 1] || (compress && !g_streamEnc[STREAM_BUFS - 1]))
     {
         fclose(f);
@@ -455,9 +466,10 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
         if (compress)
         {
             LinkStreamBlock* b = &g_streamHdr[i];
-            ok = sendAll(fd, b, sizeof(*b));
-            if (ok && b->mode == LINK_BLOCK_LZ4) ok = sendAll(fd, g_streamEnc[i], b->encLen);
-            else if (ok && b->mode == LINK_BLOCK_RAW) ok = sendAll(fd, g_streamBuf[i], b->encLen);
+            u8* data = b->mode == LINK_BLOCK_LZ4 ? g_streamEnc[i] : g_streamBuf[i];
+            u32 dataLen = b->mode == LINK_BLOCK_FILL ? 0 : b->encLen;
+            memcpy(data - sizeof(*b), b, sizeof(*b));      /* header right before the data */
+            ok = sendAll(fd, data - sizeof(*b), sizeof(*b) + dataLen);
         }
         else ok = sendAll(fd, g_streamBuf[i], g_streamLen[i]);
         sent += g_streamLen[i];
@@ -925,7 +937,10 @@ static void videoThread(void* arg)
                 frameOpen = false;
                 lastPresent = osGetTime();
             }
-            svcSleepThread(500000); /* 0.5 ms */
+            /* sleep until a packet arrives instead of asking the socket service
+               thousands of times a second (that slowed down everything else) */
+            struct pollfd pf = { .fd = g_videoFd, .events = POLLIN, .revents = 0 };
+            poll(&pf, 1, 50);
             continue;
         }
         if ((size_t)n < sizeof(LinkFramePacket)) continue;
@@ -1023,6 +1038,7 @@ static void inputThread(void* arg)
     int quitHold = 0;
     bool cstickUpWas = false;
     u32 prevHeld = 0;
+    int heloCheck = 0;
 
     while (g_running)
     {
@@ -1057,8 +1073,10 @@ static void inputThread(void* arg)
         /* while the list is open, the game gets no input */
         u32 gameKeys = g_menuOpen ? 0 : held;
 
-        /* HELO from the PC (also keep-alive) */
-        for (;;)
+        /* HELO from the PC (keep-alive, once a second): checking every 50 ms
+           is plenty and keeps the socket service free for the transfers */
+        if (++heloCheck >= 12)
+        for (heloCheck = 0;;)
         {
             uint32_t msg = 0;
             struct sockaddr_in from;
