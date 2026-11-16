@@ -508,7 +508,7 @@ static void inputThread(void* arg)
 /* ------------------------------------------------------------------ */
 /* bottom screen drawing (framebuffer is 240x320, rotated, RGB565)     */
 
-#define RGB565(r, g, b) (u16)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3))
+#define LINK_RGB565(r, g, b) (u16)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3))
 
 static inline void putPx(u16* fb, int x, int y, u16 c)
 {
@@ -531,9 +531,9 @@ static void fillRect(u16* fb, int x0, int y0, int w, int h, u16 c)
 static void drawBottom(bool haveVideo, bool zoom, bool touching, int tx, int ty)
 {
     u16* fb = (u16*)gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, NULL, NULL);
-    const u16 bg = RGB565(0x10, 0x10, 0x14);
-    const u16 frame = RGB565(0x50, 0x50, 0x60);
-    const u16 empty = RGB565(0x22, 0x22, 0x2A);
+    const u16 bg = LINK_RGB565(0x10, 0x10, 0x14);
+    const u16 frame = LINK_RGB565(0x50, 0x50, 0x60);
+    const u16 empty = LINK_RGB565(0x22, 0x22, 0x2A);
 
     if (zoom)
     {
@@ -563,7 +563,7 @@ static void drawBottom(bool haveVideo, bool zoom, bool touching, int tx, int ty)
 
     /* without a picture, show where the finger is */
     if (!haveVideo && touching)
-        fillRect(fb, tx - 2, ty - 2, 5, 5, RGB565(0xE0, 0x60, 0x60));
+        fillRect(fb, tx - 2, ty - 2, 5, 5, LINK_RGB565(0xE0, 0x60, 0x60));
 }
 
 /* ------------------------------------------------------------------ */
