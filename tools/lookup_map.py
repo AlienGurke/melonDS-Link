@@ -14,11 +14,18 @@ def main():
     syms = []
     base = None
     for line in open(path, errors="replace"):
-        m = re.match(r"\s*([0-9a-fA-F]{8,16})\s+([0-9a-fA-F]+)\s+.*?\s(\S+)\s*$", line)
-        if not m:
-            continue
-        addr = int(m.group(1), 16)
-        name = m.group(3)
+        # MSVC/lld-link style: " 0001:000a1234       ?name@@...    00000001400a2234 f   obj.obj"
+        m = re.match(r"\s*[0-9a-fA-F]{4}:[0-9a-fA-F]{8}\s+(\S+)\s+([0-9a-fA-F]{8,16})\b", line)
+        if m:
+            addr = int(m.group(2), 16)
+            name = m.group(1)
+        else:
+            # GNU ld/lld style: "<address> <size> ... <symbol>"
+            m = re.match(r"\s*([0-9a-fA-F]{8,16})\s+([0-9a-fA-F]+)\s+.*?\s(\S+)\s*$", line)
+            if not m:
+                continue
+            addr = int(m.group(1), 16)
+            name = m.group(3)
         if addr == 0:
             continue
         syms.append((addr, line.rstrip()))
