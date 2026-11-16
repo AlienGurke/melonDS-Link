@@ -185,6 +185,7 @@ private:
     LinkTuning defaultTuning = {};
 
     std::mutex reqMutex;   // serialises Request()
+    std::mutex udpMutex;   // keeps udpSock alive for the video sender (not the requests)
     intptr_t tcpSock = -1;
     intptr_t udpSock = -1;
     uint32_t seq = 1;

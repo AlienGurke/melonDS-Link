@@ -565,6 +565,13 @@ void Session::uploader()
             snprintf(line, sizeof(line), "Spielstand %s: %s in %.1f s (%s)", ok ? "auf den 3DS geschrieben" : "Upload fehlgeschlagen",
                      human(data.size()).c_str(), secs, game.c_str());
             Log(line);
+            if (ok)
+            {
+                // where the time went on the 3DS (receiving vs. writing to the SD card)
+                std::string st = Link::Get().GetStats();
+                size_t p = st.find("Upload:");
+                if (p != std::string::npos) Log("  3DS " + st.substr(p));
+            }
         }
         if (ok)
         {

@@ -64,6 +64,8 @@ static volatile u64 g_statReadTicks, g_statReadBytes;   /* SD card */
 static volatile u64 g_statPackTicks, g_statPackBytes;   /* LZ4 */
 
 /* send settings, adjustable from melonDS (LINK_CMD_SETTUNING / speed test) */
+/* upload statistics (files written by melonDS, i.e. saves) */
+static u64 g_upBytes = 0, g_upRecvTicks = 0, g_upSdTicks = 0;
 static volatile u32 g_sendPiece = 0x40000;     /* bytes per send() call */
 static volatile u32 g_sendSleepUs = 500;       /* pause when the send buffer is full */
 static volatile u32 g_sendBuf = 0x40000;       /* SO_SNDBUF of the data connection */
@@ -112,7 +114,7 @@ static bool recvAll(int fd, void* buf, size_t len)
         ssize_t n = recv(fd, p, len, 0);
         if (n < 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { svcSleepThread(1000000); continue; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) { svcSleepThread(200000); continue; }
             return false;
         }
         if (n == 0) return false;
@@ -714,6 +716,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         const uint8_t* data = payload + sizeof(req) + req.pathLen;
         size_t dataLen = h->len - sizeof(req) - req.pathLen;
 
+        u64 w0 = svcGetSystemTick();
         FILE* f = fopen(path, "r+b");
         if (!f && (req.flags & LINK_WRITE_CREATE))
         {
@@ -725,6 +728,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
                   fwrite(data, 1, dataLen, f) == dataLen;
         ok = (fflush(f) == 0) && ok;
         fclose(f);
+        g_upSdTicks += svcGetSystemTick() - w0;
         return sendResponse(fd, h, ok ? LINK_OK : LINK_ERR_IO, NULL, 0);
     }
 
@@ -858,12 +862,16 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
 
     case LINK_CMD_GETSTATS:
     {
-        char txt[256];
+        char txt[384];
         LightLock_Lock(&g_lock);
-        snprintf(txt, sizeof(txt), "%s | %s | Puffer %luK, Stueck %luK, Pause %luus%s | Fuellbereich nicht gelesen: %lu MB",
+        snprintf(txt, sizeof(txt), "%s | %s | Puffer %luK, Stueck %luK, Pause %luus%s | Fuellbereich nicht gelesen: %lu MB"
+                 " | Upload: %lu KB, Empfang %lu ms, SD %lu ms",
                  g_xferInfo, g_xferInfo2, (unsigned long)(g_sendBuf / 1024),
                  (unsigned long)(g_sendPiece / 1024), (unsigned long)g_sendSleepUs,
-                 g_sendBlocking ? ", blockierend" : "", (unsigned long)(g_statSkipped >> 20));
+                 g_sendBlocking ? ", blockierend" : "", (unsigned long)(g_statSkipped >> 20),
+                 (unsigned long)(g_upBytes / 1024), (unsigned long)(g_upRecvTicks * 1000 / SYSCLOCK_ARM11),
+                 (unsigned long)(g_upSdTicks * 1000 / SYSCLOCK_ARM11));
+        g_upBytes = g_upRecvTicks = g_upSdTicks = 0;
         LightLock_Unlock(&g_lock);
         return sendResponse(fd, h, LINK_OK, txt, (uint32_t)strlen(txt));
     }
@@ -1006,7 +1014,7 @@ static void serverThread(void* arg)
         {
             int buf = (int)g_sendBuf;   /* 32 KB like ftpd unless melonDS tuned it */
             setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
-            int rbuf = 32768;
+            int rbuf = 128 * 1024;   /* saves arrive in 256 KB pieces */
             setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rbuf, sizeof(rbuf));
         }
 
@@ -1020,7 +1028,13 @@ static void serverThread(void* arg)
             LinkHeader h;
             if (!recvAll(fd, &h, sizeof(h))) break;
             if (h.magic != LINK_MAGIC || h.len > LINK_MAX_PAYLOAD + LINK_MAX_PATH + 64) break;
+            u64 r0 = svcGetSystemTick();
             if (h.len && !recvAll(fd, g_payload, h.len)) break;
+            if (h.cmd == LINK_CMD_WRITE)
+            {
+                g_upBytes += h.len;
+                g_upRecvTicks += svcGetSystemTick() - r0;
+            }
             if (!handleCommand(fd, &h, g_payload)) break;
         }
 

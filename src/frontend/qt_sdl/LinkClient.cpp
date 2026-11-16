@@ -172,6 +172,7 @@ void Client::Disconnect()
 void Client::closeSockets()
 {
     std::lock_guard<std::mutex> lock(reqMutex);
+    std::lock_guard<std::mutex> ulock(udpMutex);
     if (tcpSock != -1) { closesock((sock_t)tcpSock); tcpSock = -1; }
     if (udpSock != -1) { closesock((sock_t)udpSock); udpSock = -1; }
 }
@@ -582,6 +583,7 @@ void Client::worker(std::string host)
         }
         {
             std::lock_guard<std::mutex> lock(reqMutex);
+            std::lock_guard<std::mutex> ulock(udpMutex);
             udpSock = (intptr_t)us;
         }
 
@@ -1083,7 +1085,8 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         hdr.flags = (uint16_t)((i << LINK_FRAME_INDEX_SHIFT) | (i + 1 == packets.size() ? LINK_FRAME_LAST : 0));
         memcpy(pk.data(), &hdr, sizeof(hdr));
         {
-            std::lock_guard<std::mutex> lock(reqMutex);   // keeps udpSock alive
+            // own lock: requests (e.g. a save going to the 3DS) must not stop the picture
+            std::lock_guard<std::mutex> lock(udpMutex);   // keeps udpSock alive
             if (udpSock == -1) return;
             sendto((sock_t)udpSock, (const char*)pk.data(), (int)pk.size(), 0, (sockaddr*)&to, sizeof(to));
         }
