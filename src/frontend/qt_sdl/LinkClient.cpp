@@ -276,6 +276,46 @@ bool Client::Write(const std::string& path, uint64_t offset, const void* data, u
     return status == LINK_OK;
 }
 
+bool Client::Replace(const std::string& from, const std::string& to)
+{
+    std::vector<uint8_t> req(2 + from.size() + to.size());
+    uint16_t fl = (uint16_t)from.size();
+    memcpy(req.data(), &fl, 2);
+    memcpy(req.data() + 2, from.data(), from.size());
+    memcpy(req.data() + 2 + from.size(), to.data(), to.size());
+    uint16_t status;
+    return Request(LINK_CMD_REPLACE, req.data(), (uint32_t)req.size(), status) && status == LINK_OK;
+}
+
+bool Client::TakeLaunchRequest(LaunchRequest& out)
+{
+    std::lock_guard<std::mutex> lock(launchMutex);
+    if (!haveLaunch) return false;
+    out = pendingLaunch;
+    haveLaunch = false;
+    return true;
+}
+
+void Client::pollEvents()
+{
+    uint16_t status;
+    std::vector<uint8_t> out;
+    if (!Request(LINK_CMD_POLLEVENT, nullptr, 0, status, &out) || status != LINK_OK) return;
+    if (out.size() < sizeof(LinkEvent)) return;
+    LinkEvent ev;
+    memcpy(&ev, out.data(), sizeof(ev));
+    if (out.size() < sizeof(ev) + ev.romPathLen + ev.savePathLen) return;
+    if (ev.type != LINK_EVENT_LAUNCH) return;
+
+    LaunchRequest r;
+    r.romSize = ev.romSize;
+    r.romPath.assign((const char*)out.data() + sizeof(ev), ev.romPathLen);
+    r.savePath.assign((const char*)out.data() + sizeof(ev) + ev.romPathLen, ev.savePathLen);
+    std::lock_guard<std::mutex> lock(launchMutex);
+    pendingLaunch = r;
+    haveLaunch = true;
+}
+
 bool Client::SetStatusText(const std::string& text)
 {
     uint16_t status;
@@ -387,10 +427,12 @@ void Client::worker(std::string host)
                 sendto(us, (const char*)&helo, sizeof(helo), 0, (sockaddr*)&udpAddr, sizeof(udpAddr));
                 lastHello = t;
             }
-            if (t - lastPing >= 2000)
+            // asking for events doubles as keep-alive
+            if (t - lastPing >= 250)
             {
                 uint16_t st;
                 if (!Request(LINK_CMD_PING, nullptr, 0, st)) break;
+                pollEvents();
                 lastPing = t;
             }
             {

@@ -130,6 +130,98 @@ static void mkdirParents(const char* path)
 }
 
 /* ------------------------------------------------------------------ */
+/* game list and launch requests                                       */
+
+#define MAX_GAMES 512
+static char g_romDir[128] = "/roms/nds";
+static char* g_games[MAX_GAMES];
+static int g_gameCount = 0;
+static volatile bool g_menuOpen = true;      /* game list shown, input not sent to the game */
+static volatile bool g_gameStarted = false;
+static char g_currentGame[128] = "";
+
+/* pending launch for melonDS (guarded by g_lock) */
+static bool g_haveEvent = false;
+static LinkEvent g_event;
+static char g_eventRom[LINK_MAX_PATH];
+static char g_eventSave[LINK_MAX_PATH];
+
+static int cmpNoCase(const void* a, const void* b)
+{
+    return strcasecmp(*(char* const*)a, *(char* const*)b);
+}
+
+static bool hasNdsExt(const char* name)
+{
+    size_t n = strlen(name);
+    return n > 4 && strcasecmp(name + n - 4, ".nds") == 0;
+}
+
+static void scanGames(void)
+{
+    for (int i = 0; i < g_gameCount; i++) free(g_games[i]);
+    g_gameCount = 0;
+    char dir[160];
+    snprintf(dir, sizeof(dir), "sdmc:%s", g_romDir);
+    DIR* d = opendir(dir);
+    if (!d) return;
+    struct dirent* e;
+    while ((e = readdir(d)) != NULL && g_gameCount < MAX_GAMES)
+    {
+        if (e->d_type == DT_DIR || !hasNdsExt(e->d_name)) continue;
+        g_games[g_gameCount++] = strdup(e->d_name);
+    }
+    closedir(d);
+    qsort(g_games, g_gameCount, sizeof(char*), cmpNoCase);
+}
+
+static bool sdExists(const char* sdPath)
+{
+    char full[LINK_MAX_PATH + 8];
+    snprintf(full, sizeof(full), "sdmc:%s", sdPath);
+    struct stat st;
+    return stat(full, &st) == 0;
+}
+
+/* the user picked a game: prepare the event melonDS will fetch */
+static void requestLaunch(int idx)
+{
+    if (idx < 0 || idx >= g_gameCount) return;
+    const char* name = g_games[idx];
+
+    char rom[LINK_MAX_PATH], base[LINK_MAX_PATH], save[LINK_MAX_PATH], alt[LINK_MAX_PATH];
+    snprintf(rom, sizeof(rom), "%.100s/%.150s", g_romDir, name);
+    snprintf(base, sizeof(base), "%s", name);
+    base[strlen(base) - 4] = '\0';                          /* drop ".nds" */
+    /* TWiLight Menu++ keeps saves in "saves/" next to the ROMs (default)
+       or right next to the ROM */
+    snprintf(save, sizeof(save), "%.100s/saves/%.140s.sav", g_romDir, base);
+    snprintf(alt, sizeof(alt), "%.100s/%.140s.sav", g_romDir, base);
+    if (!sdExists(save) && sdExists(alt)) snprintf(save, sizeof(save), "%s", alt);
+
+    char full[LINK_MAX_PATH + 8];
+    snprintf(full, sizeof(full), "sdmc:%s", rom);
+    struct stat st;
+    u64 size = (stat(full, &st) == 0) ? (u64)st.st_size : 0;
+
+    LightLock_Lock(&g_lock);
+    memset(&g_event, 0, sizeof(g_event));
+    g_event.type = LINK_EVENT_LAUNCH;
+    g_event.romSize = size;
+    snprintf(g_eventRom, sizeof(g_eventRom), "%s", rom);
+    snprintf(g_eventSave, sizeof(g_eventSave), "%s", save);
+    g_event.romPathLen = (uint16_t)strlen(g_eventRom);
+    g_event.savePathLen = (uint16_t)strlen(g_eventSave);
+    g_haveEvent = true;
+    snprintf(g_currentGame, sizeof(g_currentGame), "%.120s", base);
+    snprintf(g_statusText, sizeof(g_statusText), "Starte Spiel - warte auf melonDS...");
+    LightLock_Unlock(&g_lock);
+
+    g_gameStarted = true;
+    g_menuOpen = false;
+}
+
+/* ------------------------------------------------------------------ */
 /* command handlers                                                    */
 
 static uint8_t* g_payload;   /* LINK_MAX_PAYLOAD + header space */
@@ -274,6 +366,56 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         return sendResponse(fd, h, LINK_OK, g_outbuf, used);
     }
 
+    case LINK_CMD_POLLEVENT:
+    {
+        LightLock_Lock(&g_lock);
+        bool have = g_haveEvent;
+        uint32_t used = 0;
+        if (have)
+        {
+            memcpy(g_outbuf, &g_event, sizeof(g_event));
+            used = sizeof(g_event);
+            memcpy(g_outbuf + used, g_eventRom, g_event.romPathLen);
+            used += g_event.romPathLen;
+            memcpy(g_outbuf + used, g_eventSave, g_event.savePathLen);
+            used += g_event.savePathLen;
+            g_haveEvent = false;
+        }
+        LightLock_Unlock(&g_lock);
+        if (!have) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
+        return sendResponse(fd, h, LINK_OK, g_outbuf, used);
+    }
+
+    case LINK_CMD_REPLACE:
+    {
+        /* replace `to` with `from`, keeping the old file until the new one is in place */
+        if (h->len < 2) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
+        uint16_t fromLen;
+        memcpy(&fromLen, payload, 2);
+        if (2u + fromLen >= h->len) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
+        char from[LINK_MAX_PATH + 8], to[LINK_MAX_PATH + 8], bak[LINK_MAX_PATH + 16];
+        if (!makeSdPath(from, sizeof(from), (const char*)payload + 2, fromLen) ||
+            !makeSdPath(to, sizeof(to), (const char*)payload + 2 + fromLen, h->len - 2 - fromLen))
+            return sendResponse(fd, h, LINK_ERR_DENIED, NULL, 0);
+        struct stat st;
+        if (stat(from, &st) != 0) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
+        snprintf(bak, sizeof(bak), "%s.old", to);
+        bool hadOld = stat(to, &st) == 0;
+        if (hadOld)
+        {
+            remove(bak);
+            if (rename(to, bak) != 0) return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
+        }
+        else mkdirParents(to);
+        if (rename(from, to) != 0)
+        {
+            if (hadOld) rename(bak, to);   /* put the old one back */
+            return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
+        }
+        if (hadOld) remove(bak);
+        return sendResponse(fd, h, LINK_OK, NULL, 0);
+    }
+
     default:
         return sendResponse(fd, h, LINK_ERR_BADCMD, NULL, 0);
     }
@@ -330,6 +472,7 @@ static u16 g_dsBack[192 * 256];           /* tiles are decoded here first */
 static volatile u32 g_videoFrames = 0;    /* bumps on every received packet */
 static volatile u64 g_lastVideoTime = 0;
 static volatile bool g_zoom = true;   /* enlarged is the default */
+static u32 g_menuKeys = 0;            /* key presses for the game list (g_lock) */
 static int g_videoFd = -1;
 
 /* receipt of video packets, reported back to the PC in every input packet */
@@ -594,6 +737,7 @@ static void inputThread(void* arg)
     u32 packetId = 0;
     int quitHold = 0;
     bool cstickUpWas = false;
+    u32 prevHeld = 0;
 
     while (g_running)
     {
@@ -610,6 +754,23 @@ static void inputThread(void* arg)
         bool cup = (held & KEY_CSTICK_UP) != 0;
         if (cup && !cstickUpWas) g_zoom = !g_zoom;
         cstickUpWas = cup;
+
+        /* C-stick down opens/closes the game list */
+        u32 down = held & ~prevHeld;
+        prevHeld = held;
+        if (down & KEY_CSTICK_DOWN)
+        {
+            if (!g_menuOpen) g_menuOpen = true;
+            else if (g_gameStarted) g_menuOpen = false;
+        }
+        else if (g_menuOpen)
+        {
+            LightLock_Lock(&g_lock);
+            g_menuKeys |= down;
+            LightLock_Unlock(&g_lock);
+        }
+        /* while the list is open, the game gets no input */
+        u32 gameKeys = g_menuOpen ? 0 : held;
 
         /* HELO from the PC (also keep-alive) */
         for (;;)
@@ -635,7 +796,7 @@ static void inputThread(void* arg)
         irrstCstickRead(&cstick);
 
         u16 dsX = 0, dsY = 0;
-        bool dsTouch = (held & KEY_TOUCH) && mapTouch(touch.px, touch.py, g_zoom, &dsX, &dsY);
+        bool dsTouch = (gameKeys & KEY_TOUCH) && mapTouch(touch.px, touch.py, g_zoom, &dsX, &dsY);
 
         if (havePeer)
         {
@@ -643,7 +804,7 @@ static void inputThread(void* arg)
             memset(&p, 0, sizeof(p));
             p.magic = LINK_MAGIC;
             p.id = packetId++;
-            p.keys = held;
+            p.keys = gameKeys;
             p.cpadX = cpad.dx;
             p.cpadY = cpad.dy;
             p.touchX = touch.px;
@@ -753,7 +914,14 @@ static void loadConfig(void)
     while (fgets(line, sizeof(line), f))
     {
         int v;
+        char dir[128];
         if (sscanf(line, "zoom=%d", &v) == 1) g_zoom = v != 0;
+        else if (sscanf(line, "romdir=%127[^\r\n]", dir) == 1 && dir[0] == '/')
+        {
+            size_t n = strlen(dir);
+            while (n > 1 && dir[n - 1] == '/') dir[--n] = '\0';
+            snprintf(g_romDir, sizeof(g_romDir), "%s", dir);
+        }
     }
     fclose(f);
 }
@@ -763,6 +931,7 @@ static void saveConfig(void)
     FILE* f = fopen(CONFIG_PATH, "w");
     if (!f) return;
     fprintf(f, "zoom=%d\n", g_zoom ? 1 : 0);
+    fprintf(f, "romdir=%s\n", g_romDir);
     fclose(f);
 }
 
@@ -782,6 +951,7 @@ int main(int argc, char** argv)
     LightLock_Init(&g_lock);
     LightLock_Init(&g_ackLock);
     loadConfig();
+    scanGames();
 
     printf("\x1b[1;1H\x1b[36mmelonDS Link\x1b[0m  (Protokoll v%u)\n\n", (unsigned)LINK_VERSION);
 
@@ -848,6 +1018,8 @@ int main(int argc, char** argv)
     u32 lastVideoFrames = (u32)-1;
     bool lastZoom = !g_zoom, lastHaveVideo = true;
     bool savedZoom = g_zoom;
+    int menuCursor = 0, menuTop = 0;
+    const int LIST_ROWS = 14;
     int redrawBoth = 2;
 
     while (aptMainLoop() && g_running)
@@ -875,28 +1047,78 @@ int main(int argc, char** argv)
             redrawBoth--;
         }
 
-        /* top screen status */
-        char status[128], peer[32];
+        /* game list input */
+        u32 mk;
+        LightLock_Lock(&g_lock);
+        mk = g_menuKeys;
+        g_menuKeys = 0;
+        LightLock_Unlock(&g_lock);
+        if (g_menuOpen && mk)
+        {
+            if (mk & (KEY_DUP | KEY_CPAD_UP)) menuCursor--;
+            if (mk & (KEY_DDOWN | KEY_CPAD_DOWN)) menuCursor++;
+            if (mk & (KEY_DLEFT | KEY_L)) menuCursor -= LIST_ROWS;
+            if (mk & (KEY_DRIGHT | KEY_R)) menuCursor += LIST_ROWS;
+            if (menuCursor >= g_gameCount) menuCursor = g_gameCount - 1;
+            if (menuCursor < 0) menuCursor = 0;
+            if (mk & KEY_Y) scanGames();
+            if ((mk & KEY_A) && g_gameCount > 0) requestLaunch(menuCursor);
+            else if ((mk & KEY_B) && g_gameStarted) g_menuOpen = false;
+        }
+
+        /* top screen: status */
+        char status[128], peer[32], game[128];
         LightLock_Lock(&g_lock);
         snprintf(status, sizeof(status), "%s", g_statusText);
         snprintf(peer, sizeof(peer), "%s", g_peerName);
+        snprintf(game, sizeof(game), "%s", g_currentGame);
         LightLock_Unlock(&g_lock);
 
         printf("\x1b[3;1HIP-Adresse:  \x1b[33m%s\x1b[0m          \n", inet_ntoa(ip));
-        printf("\x1b[5;1HPC (Daten):   %s\x1b[K\n",
+        printf("\x1b[4;1HmelonDS:     %s\x1b[K\n",
                g_tcpConnected ? "\x1b[32mverbunden\x1b[0m" : "\x1b[90mwartet...\x1b[0m");
-        printf("\x1b[6;1HSteuerung:    %s\x1b[K\n",
-               in.haveUdpPeer ? "\x1b[32maktiv\x1b[0m" : "\x1b[90mwartet...\x1b[0m");
-        printf("\x1b[7;1HBild:         %s\x1b[K\n",
-               haveVideo ? "\x1b[32mempfangen\x1b[0m" : "\x1b[90mkein Bild\x1b[0m");
-        printf("\x1b[8;1HAnzeige:      %s\x1b[K\n", zoom ? "Vergroessert" : "Original (1:1)");
-        if (g_tcpConnected) printf("\x1b[9;1HPC-Adresse:   %s\x1b[K\n", peer);
-        else printf("\x1b[9;1H\x1b[K\n");
-        printf("\x1b[11;1H%s\x1b[K\n", status);
+        printf("\x1b[5;1HSteuerung:   %s   Bild: %s\x1b[K\n",
+               in.haveUdpPeer ? "\x1b[32maktiv\x1b[0m" : "\x1b[90m-\x1b[0m",
+               haveVideo ? "\x1b[32mok\x1b[0m" : "\x1b[90m-\x1b[0m");
+        printf("\x1b[6;1HAnzeige:     %s\x1b[K\n", zoom ? "Vergroessert" : "Original (1:1)");
+        printf("\x1b[8;1H\x1b[33m%.49s\x1b[0m\x1b[K\n", status);
 
-        printf("\x1b[25;1H\x1b[90mIn melonDS: 3DS Link > Mit 3DS verbinden\n");
-        printf("und diese IP eingeben.\n\n");
-        printf("C-Stick hoch = Original / Vergroessert\n");
+        /* top screen: game list or current game */
+        if (g_menuOpen)
+        {
+            printf("\x1b[10;1H\x1b[36mSpiel waehlen\x1b[0m (%d in %s)\x1b[K\n", g_gameCount, g_romDir);
+            if (menuCursor < menuTop) menuTop = menuCursor;
+            if (menuCursor >= menuTop + LIST_ROWS) menuTop = menuCursor - LIST_ROWS + 1;
+            for (int r = 0; r < LIST_ROWS; r++)
+            {
+                int i = menuTop + r;
+                printf("\x1b[%d;1H", 11 + r);
+                if (i < g_gameCount)
+                {
+                    char name[64];
+                    snprintf(name, sizeof(name), "%s", g_games[i]);
+                    size_t n = strlen(name);
+                    if (n > 4 && strcasecmp(name + n - 4, ".nds") == 0) name[n - 4] = '\0';
+                    if (i == menuCursor) printf("\x1b[47;30m> %-47.47s\x1b[0m", name);
+                    else printf("  %-47.47s", name);
+                }
+                else if (r == 0 && g_gameCount == 0)
+                    printf("\x1b[31m  Keine .nds-Dateien gefunden.\x1b[0m\x1b[K");
+                else printf("\x1b[K");
+            }
+            printf("\x1b[26;1H\x1b[90mA = starten   Y = Liste neu laden%s\x1b[K\n",
+                   g_gameStarted ? "   B = zurueck" : "");
+        }
+        else
+        {
+            printf("\x1b[10;1H\x1b[36mLaeuft:\x1b[0m %.40s\x1b[K\n", game);
+            for (int r = 0; r < LIST_ROWS; r++) printf("\x1b[%d;1H\x1b[K", 11 + r);
+            printf("\x1b[26;1H\x1b[K\n");
+        }
+
+        printf("\x1b[27;1H\x1b[90mC-Stick runter = Spieleliste\x1b[K\n");
+        printf("C-Stick hoch = Original / Vergroessert\x1b[K\n");
+        printf("In melonDS: 3DS Link > Mit 3DS verbinden\x1b[K\n");
         printf("SELECT + START halten = Beenden\x1b[0m");
 
         gfxFlushBuffers();

@@ -30,6 +30,13 @@ enum class State
     Connected,
 };
 
+struct LaunchRequest
+{
+    std::string romPath;      // on the 3DS SD card, e.g. /roms/nds/Game.nds
+    std::string savePath;     // on the 3DS SD card (may not exist yet)
+    uint64_t romSize = 0;
+};
+
 struct InputSnapshot
 {
     bool valid = false;        // a recent packet exists
@@ -76,6 +83,13 @@ public:
     bool Read(const std::string& path, uint64_t offset, uint32_t length, std::vector<uint8_t>& out);
     bool Write(const std::string& path, uint64_t offset, const void* data, uint32_t length, bool create);
     bool SetStatusText(const std::string& text);
+    bool Replace(const std::string& from, const std::string& to);
+
+    // a game the user picked on the 3DS (fetched in the background)
+    bool TakeLaunchRequest(LaunchRequest& out);
+
+    // show a message in melonDS (thread-safe)
+    void PostMessage(const std::string& msg) { pushMessage(msg); }
 
 private:
     void worker(std::string host);
@@ -98,6 +112,11 @@ private:
 
     std::mutex msgMutex;
     std::deque<std::string> messages;
+
+    std::mutex launchMutex;
+    bool haveLaunch = false;
+    LaunchRequest pendingLaunch;
+    void pollEvents();
 
     // video: latest frame waiting to be sent + what the 3DS should have
     std::mutex videoMutex;

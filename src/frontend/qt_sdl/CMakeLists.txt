@@ -11,6 +11,7 @@ set(SOURCES_QT_SDL
     EmuInstanceAudio.cpp
     EmuInstanceInput.cpp
     LinkClient.cpp
+    LinkSession.cpp
     EmuThread.cpp
     CheatImportDialog.cpp
     CheatsDialog.cpp

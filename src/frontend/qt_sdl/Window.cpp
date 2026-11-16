@@ -75,6 +75,8 @@
 #include "Window.h"
 #include "AboutDialog.h"
 #include "LinkClient.h"
+#include "LinkSession.h"
+#include "SaveManager.h"
 
 using namespace melonDS;
 
@@ -633,6 +635,18 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
             actLinkDisconnect = menu->addAction("Trennen");
             connect(actLinkDisconnect, &QAction::triggered, this, &MainWindow::onLinkDisconnect);
+
+            // games picked on the 3DS are prepared and booted from here (instance 0)
+            if (windowID == 0 && emuInstance->getInstanceID() == 0)
+            {
+                SaveManager::WriteHook = [](const std::string& path, const melonDS::u8* data, melonDS::u32 len)
+                {
+                    Link::Session::Get().OnSaveWritten(path, data, len);
+                };
+                linkTimer = new QTimer(this);
+                connect(linkTimer, &QTimer::timeout, this, &MainWindow::onLinkTick);
+                linkTimer->start(200);
+            }
 
             connect(menu, &QMenu::aboutToShow, this, [this]
             {
@@ -1789,6 +1803,29 @@ void MainWindow::onLinkConnect()
 
     Link::Get().Connect(host.toStdString());
     emuInstance->osdAddMessage(0, "3DS Link: verbinde mit %s...", host.toStdString().c_str());
+}
+
+void MainWindow::onLinkTick()
+{
+    if (Link::Get().GetState() == Link::State::Disconnected) return;
+
+    std::string rom = Link::Session::Get().Tick(this, localCfg.GetString("SaveFilePath"));
+    if (rom.empty()) return;
+
+    QStringList file{QString::fromStdString(rom)};
+    QString errorstr;
+    if (!emuThread->bootROM(file, errorstr))
+    {
+        QMessageBox::critical(this, "melonDS Link", errorstr);
+        return;
+    }
+    Link::Session::Get().SetActiveSave(emuInstance->ndsSave ? emuInstance->ndsSave->GetPath() : "");
+
+    QString filename = file.join('|');
+    recentFileList.removeAll(filename);
+    recentFileList.prepend(filename);
+    updateRecentFilesMenu();
+    updateCartInserted(false);
 }
 
 void MainWindow::onLinkDisconnect()

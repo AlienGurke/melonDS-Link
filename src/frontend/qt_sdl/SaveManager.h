@@ -26,6 +26,7 @@
 #include <time.h>
 #include <atomic>
 #include <memory>
+#include <functional>
 #include <QThread>
 #include <QMutex>
 
@@ -48,6 +49,9 @@ public:
 
     bool NeedsFlush();
     void FlushSecondaryBuffer(melonDS::u8* dst = nullptr, melonDS::u32 dstLength = 0);
+
+    // melonDS Link: called (on the saving thread) after a save file was written
+    static std::function<void(const std::string& path, const melonDS::u8* data, melonDS::u32 len)> WriteHook;
 
 private:
     std::string Path;

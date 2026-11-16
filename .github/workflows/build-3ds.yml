@@ -25,9 +25,14 @@ jobs:
       uses: actions/checkout@v6
     - name: Build
       run: make -C link3ds
+    - name: Build .cia (install with FBI for a Home Menu icon)
+      continue-on-error: true
+      run: |
+        command -v unzip >/dev/null || (apt-get update -qq && apt-get install -y -qq unzip curl)
+        sh link3ds/cia/build-cia.sh link3ds/melonDS-Link.elf link3ds/melonDS-Link.cia
     - uses: actions/upload-artifact@v7
       with:
         name: melonDS-Link-3ds
         path: |
           link3ds/melonDS-Link.3dsx
-          link3ds/melonDS-Link.smdh
+          link3ds/melonDS-Link.cia

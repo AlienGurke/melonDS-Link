@@ -135,6 +135,7 @@ private slots:
     void onLANStartClient();
     void onLinkConnect();
     void onLinkDisconnect();
+    void onLinkTick();
     void onNPStartHost();
     void onNPStartClient();
     void onNPTest();
@@ -261,6 +262,7 @@ public:
     QAction* actLANStartClient;
     QAction* actLinkConnect;
     QAction* actLinkDisconnect;
+    QTimer* linkTimer = nullptr;
     QAction* actNPStartHost;
     QAction* actNPStartClient;
     QAction* actNPTest;

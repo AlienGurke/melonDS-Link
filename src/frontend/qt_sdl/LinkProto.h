@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        5u
+#define LINK_VERSION        6u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -42,6 +42,15 @@ enum LinkCommand
     LINK_CMD_SETSIZE    = 6, /* in: LinkSetSizeReq + path  out: -                  */
     LINK_CMD_LISTDIR    = 7, /* in: path                   out: LinkDirEntry list  */
     LINK_CMD_STATUSTEXT = 8, /* in: utf-8 text (shown on the 3DS)  out: -          */
+    LINK_CMD_POLLEVENT  = 9, /* in: -   out: LinkEvent + paths, or LINK_ERR_NOTFOUND */
+    LINK_CMD_REPLACE    = 10,/* in: u16 fromLen + from + to: atomically replace `to`
+                                with `from` (to may exist)  out: -                */
+};
+
+/* Events the 3DS has for melonDS (fetched with LINK_CMD_POLLEVENT) */
+enum LinkEventType
+{
+    LINK_EVENT_LAUNCH = 1,   /* the user picked a game on the 3DS */
 };
 
 enum LinkStatus
@@ -108,6 +117,15 @@ typedef struct LINK_PACKED LinkSetSizeReq
     uint64_t size;
     /* followed by path */
 } LinkSetSizeReq;
+
+typedef struct LINK_PACKED LinkEvent
+{
+    uint32_t type;
+    uint32_t reserved;
+    uint64_t romSize;
+    uint16_t romPathLen;     /* followed by romPathLen bytes ROM path (SD card) */
+    uint16_t savePathLen;    /* then savePathLen bytes save path (may not exist yet) */
+} LinkEvent;
 
 typedef struct LINK_PACKED LinkDirEntry
 {

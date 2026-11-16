@@ -5,11 +5,25 @@ zeigt den unteren DS-Bildschirm auf dem 3DS an und gibt melonDS Zugriff auf
 die SD-Karte (Spielstände, später ROMs).
 
 ## Benutzung
-1. `melonDS-Link.3dsx` nach `sd:/3ds/` kopieren.
-2. Auf dem 3DS über den Homebrew Launcher starten. Oben steht die IP-Adresse.
-3. In melonDS: **3DS Link → Mit 3DS verbinden…** und die IP eingeben.
+1. `melonDS-Link.cia` mit FBI installieren (Symbol im Home-Menü) – oder
+   `melonDS-Link.3dsx` nach `sd:/3ds/` kopieren und über den Homebrew Launcher starten.
+2. Oben steht die IP-Adresse. In melonDS: **3DS Link → Mit 3DS verbinden…** und die IP eingeben.
+3. Auf dem 3DS ein Spiel aus der Liste wählen (A). melonDS kopiert die ROM beim
+   ersten Mal vom 3DS (`melonDS-Link/ROMs/` neben melonDS), holt den aktuellen
+   Spielstand vom 3DS und startet das Spiel.
 4. Spielen. Der untere 3DS-Bildschirm zeigt den unteren DS-Bildschirm –
    egal, was am PC-Monitor angezeigt wird (auch bei „nur oberer Bildschirm“).
+
+**Spielstände:** Gespeichert wird immer auf dem 3DS (`<ROM-Ordner>/saves/<Spiel>.sav`,
+wie TWiLight Menu++). Jedes Speichern im Spiel wird sofort auf den 3DS geschrieben –
+erst in eine Zwischendatei, dann ausgetauscht, so dass ein WLAN-Abbruch nichts
+beschädigt. Ist der 3DS gerade nicht erreichbar, holt melonDS das nach. Die letzten
+5 Versionen liegen zusätzlich in `melonDS-Link/Backups/<Spiel>/` neben melonDS.
+
+**Spieleliste:** zeigt alle `.nds` aus `/roms/nds` (änderbar: `romdir=` in
+`sd:/3ds/melonDS-Link.cfg`). Steuerkreuz/Circle Pad wählen, L/R blättern,
+A startet, Y lädt die Liste neu, B schließt sie. **C-Stick nach unten** öffnet die
+Liste jederzeit; solange sie offen ist, bekommt das Spiel keine Eingaben.
 
 **Anzeigemodi** (C-Stick nach oben wechselt, die Wahl wird gespeichert):
 - *Vergrößert* (Standard): auf den ganzen 3DS-Bildschirm (320×240) skaliert.
@@ -29,6 +43,7 @@ gibt es keine halb alten, halb neuen Bilder. Die Datenrate passt sich ans WLAN a
 | Steuerkreuz / Circle Pad | Steuerkreuz        |
 | Touchscreen    | Touchscreen (passend zum Anzeigemodus) |
 | C-Stick hoch   | Original / Vergrößert        |
+| C-Stick runter | Spieleliste                  |
 | ZR (halten)    | Vorspulen                    |
 | ZL             | Bildschirme tauschen         |
 
