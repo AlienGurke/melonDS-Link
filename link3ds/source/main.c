@@ -54,7 +54,9 @@ static bool sendAll(int fd, const void* buf, size_t len)
     const uint8_t* p = (const uint8_t*)buf;
     while (len > 0)
     {
-        ssize_t n = send(fd, p, len, 0);
+        /* 64 KB per call, like ftpd: bigger sends are slower through the 3DS socket service */
+        size_t piece = len > 0x10000 ? 0x10000 : len;
+        ssize_t n = send(fd, p, piece, 0);
         if (n < 0)
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -324,7 +326,13 @@ static volatile int g_streamState[STREAM_BUFS];    /* 0 empty, 1 full, 2 end/err
 static FILE* g_streamFile;
 static volatile u64 g_streamLeft;
 static volatile bool g_streamStop;
-static volatile bool g_streamCompress;
+static volatile bool g_streamCompress;   /* LZ4 on (switched off if it can't keep up) */
+static volatile bool g_streamPack;       /* compressed protocol (fill blocks etc.) */
+static volatile u32 g_senderStarved;     /* sender had to wait for the reader */
+static LZ4_stream_t g_lz4State;          /* ~16 KB: must not live on a thread stack */
+
+/* transfer info for the top screen (guarded by g_lock) */
+static char g_xferInfo[64] = "";
 
 /* one value repeated over the whole block (cartridge padding)? */
 static bool isUniform(const u8* p, u32 n)
@@ -350,7 +358,7 @@ static void streamReader(void* arg)
         if (got != want) { g_streamState[i] = 2; g_streamLen[i] = 0; break; }
         g_streamLen[i] = want;
 
-        if (g_streamCompress)
+        if (g_streamPack)
         {
             LinkStreamBlock* b = &g_streamHdr[i];
             memset(b, 0, sizeof(*b));
@@ -360,10 +368,10 @@ static void streamReader(void* arg)
                 b->mode = LINK_BLOCK_FILL;
                 b->fill = g_streamBuf[i][0];
             }
-            else
+            else if (g_streamCompress)
             {
-                int enc = LZ4_compress_default((const char*)g_streamBuf[i], (char*)g_streamEnc[i],
-                                               (int)want, LZ4_compressBound(STREAM_CHUNK));
+                int enc = LZ4_compress_fast_extState(&g_lz4State, (const char*)g_streamBuf[i], (char*)g_streamEnc[i],
+                                                     (int)want, LZ4_compressBound(STREAM_CHUNK), 1);
                 if (enc > 0 && (u32)enc < want - want / 32)
                 {
                     b->mode = LINK_BLOCK_LZ4;
@@ -374,6 +382,11 @@ static void streamReader(void* arg)
                     b->mode = LINK_BLOCK_RAW;   /* already compressed data: send as is */
                     b->encLen = want;
                 }
+            }
+            else
+            {
+                b->mode = LINK_BLOCK_RAW;       /* LZ4 switched off: the CPU was the bottleneck */
+                b->encLen = want;
             }
         }
 
@@ -407,7 +420,9 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     g_streamFile = f;
     g_streamLeft = length;
     g_streamStop = false;
+    g_streamPack = compress;
     g_streamCompress = compress;
+    g_senderStarved = 0;
 
     u64 len64 = length;
     if (!sendResponse(fd, h, LINK_OK, &len64, sizeof(len64))) { fclose(f); return false; }
@@ -418,15 +433,23 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
     bool isNew = false;
     APT_CheckNew3DS(&isNew);
     Thread rd = NULL;
-    if (isNew) rd = threadCreate(streamReader, NULL, 0x4000, prio, 2, false);
-    if (!rd) rd = threadCreate(streamReader, NULL, 0x4000, prio, -2, false);
+    if (isNew) rd = threadCreate(streamReader, NULL, 0x10000, prio, 2, false);
+    if (!rd) rd = threadCreate(streamReader, NULL, 0x10000, prio, -2, false);
 
     bool ok = true;
-    u64 sent = 0;
+    u64 sent = 0, wire = 0;
     int i = 0;
+    u64 t0 = osGetTime(), lastInfo = t0;
+    u64 waitTicks = 0, blocks = 0;
     while (sent < length && ok && g_running)
     {
-        if (g_streamState[i] == 0) { svcSleepThread(200000); continue; }
+        if (g_streamState[i] == 0)
+        {
+            u64 w0 = svcGetSystemTick();
+            svcSleepThread(200000);
+            waitTicks += svcGetSystemTick() - w0;
+            continue;
+        }
         if (g_streamState[i] == 2) { ok = false; break; }           /* SD read error */
         if (compress)
         {
@@ -437,8 +460,31 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
         }
         else ok = sendAll(fd, g_streamBuf[i], g_streamLen[i]);
         sent += g_streamLen[i];
+        wire += compress ? sizeof(LinkStreamBlock) + (g_streamHdr[i].mode == LINK_BLOCK_FILL ? 0 : g_streamHdr[i].encLen)
+                         : g_streamLen[i];
         g_streamState[i] = 0;
         i = (i + 1) % STREAM_BUFS;
+        blocks++;
+
+        /* every 8 blocks: if we spent more than a third of the time waiting
+           for the reader, packing is slower than the WiFi -> stop using LZ4 */
+        if (compress && g_streamCompress && blocks % 8 == 0)
+        {
+            u64 now = osGetTime();
+            u64 elapsedTicks = (now - lastInfo) * (u64)SYSCLOCK_ARM11 / 1000;
+            if (elapsedTicks > 0 && waitTicks * 3 > elapsedTicks) g_streamCompress = false;
+            waitTicks = 0;
+            lastInfo = now;
+        }
+        u64 secs1000 = osGetTime() - t0;
+        if (secs1000 > 0 && blocks % 4 == 0)
+        {
+            LightLock_Lock(&g_lock);
+            snprintf(g_xferInfo, sizeof(g_xferInfo), "WLAN %lu KB/s, Daten %lu KB/s, LZ4 %s",
+                     (unsigned long)(wire / secs1000), (unsigned long)(sent / secs1000),
+                     !compress ? "-" : g_streamCompress ? "an" : "aus (CPU zu langsam)");
+            LightLock_Unlock(&g_lock);
+        }
     }
     g_streamStop = true;
     threadJoin(rd, U64_MAX);
@@ -677,7 +723,7 @@ static void serverThread(void* arg)
         int flags = fcntl(fd, F_GETFL, 0);
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         {
-            int buf = 256 * 1024;   /* keep the WiFi busy while we refill */
+            int buf = 32768;   /* what ftpd uses on the 3DS; larger was slower */
             setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &buf, sizeof(buf));
             setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf, sizeof(buf));
         }
@@ -1339,6 +1385,13 @@ int main(int argc, char** argv)
                in.haveUdpPeer ? "\x1b[32maktiv\x1b[0m" : "\x1b[90m-\x1b[0m",
                haveVideo ? "\x1b[32mok\x1b[0m" : "\x1b[90m-\x1b[0m");
         printf("\x1b[6;1HAnzeige:     %s\x1b[K\n", zoom ? "Vergroessert" : "Original (1:1)");
+        {
+            char xi[64];
+            LightLock_Lock(&g_lock);
+            snprintf(xi, sizeof(xi), "%s", g_xferInfo);
+            LightLock_Unlock(&g_lock);
+            printf("\x1b[7;1H\x1b[90m%.49s\x1b[0m\x1b[K\n", xi);
+        }
         printf("\x1b[8;1H\x1b[33m%.49s\x1b[0m\x1b[K\n", status);
 
         /* top screen: game list or current game */
