@@ -1,0 +1,25 @@
+# melonDS Link: find the function behind a crash offset of an earlier Windows build
+name: Look up crash
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Windows build run the crashing melonDS.exe came from"
+        required: true
+      offsets:
+        description: "Fault offsets from the Windows event log, separated by spaces"
+        required: true
+
+jobs:
+  lookup:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+      with:
+        name: melonDS-windows-x86_64-map
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ github.token }}
+        path: map
+    - run: python3 tools/lookup_map.py map/melonDS.map ${{ inputs.offsets }}
