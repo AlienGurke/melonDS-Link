@@ -114,7 +114,7 @@ static bool recvAll(int fd, void* buf, size_t len)
         ssize_t n = recv(fd, p, len, 0);
         if (n < 0)
         {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { svcSleepThread(200000); continue; }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) { svcSleepThread(1000000); continue; }
             return false;
         }
         if (n == 0) return false;
@@ -716,6 +716,10 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         const uint8_t* data = payload + sizeof(req) + req.pathLen;
         size_t dataLen = h->len - sizeof(req) - req.pathLen;
 
+        /* SD card and WiFi are served on the same system core: while writing,
+           the video and input threads leave the socket service alone
+           (otherwise 512 KB took 10-18 s to write) */
+        g_bulkActive = true;
         u64 w0 = svcGetSystemTick();
         FILE* f = fopen(path, "r+b");
         if (!f && (req.flags & LINK_WRITE_CREATE))
@@ -723,7 +727,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             mkdirParents(path);
             f = fopen(path, "w+b");
         }
-        if (!f) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
+        if (!f) { g_bulkActive = false; return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0); }
         /* no stdio buffer: otherwise the data goes to the SD card in ~1 KB
            pieces, each committed on its own (512 KB took ~10 s) */
         setvbuf(f, NULL, _IONBF, 0);
@@ -732,6 +736,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         ok = (fflush(f) == 0) && ok;
         fclose(f);
         g_upSdTicks += svcGetSystemTick() - w0;
+        g_bulkActive = false;
         return sendResponse(fd, h, ok ? LINK_OK : LINK_ERR_IO, NULL, 0);
     }
 
@@ -1213,6 +1218,9 @@ static void videoThread(void* arg)
 
     while (g_running)
     {
+        /* big transfer or SD card write: leave the socket service alone, even
+           if packets keep coming (they wait in the buffer or get resent) */
+        if (g_bulkActive) { svcSleepThread(20000000); continue; }
         ssize_t n = recvfrom(g_videoFd, buf, sizeof(buf), 0, NULL, NULL);
         if (n <= 0)
         {
