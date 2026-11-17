@@ -642,7 +642,7 @@ void Client::worker(std::string host)
         sock_t ts = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         setNonBlocking(ts, true);
         connect(ts, (sockaddr*)&tcpAddr, sizeof(tcpAddr));
-        bool ok = waitSock(ts, 1, 3000);
+        bool ok = waitSock(ts, 1, 1500);   // a 3DS in the same WiFi answers far quicker
         if (ok)
         {
             int err = 0;
@@ -653,7 +653,8 @@ void Client::worker(std::string host)
         if (!ok)
         {
             closesock(ts);
-            for (int i = 0; i < 20 && !stopRequested; i++)
+            // try again soon: after the 3DS woke up, every second counts
+            for (int i = 0; i < 5 && !stopRequested; i++)
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }

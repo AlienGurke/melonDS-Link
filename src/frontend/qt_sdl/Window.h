@@ -273,6 +273,7 @@ public:
     QAction* actLinkPauseOnLoss = nullptr;
     QAction* actLinkAutoConnect = nullptr;
     QAction* actLinkPauseOnLid = nullptr;
+    QAction* actLinkBlackout = nullptr;
     QMenu* linkStatusMenu = nullptr;
     int linkStatusMode = 0;   // 0 off, 1 always, 2 always (moving), 3.. every 5/10/20/30/60 min
     QAction* actLinkStatusInfo = nullptr;

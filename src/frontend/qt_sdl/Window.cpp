@@ -709,6 +709,15 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 globalCfg.SetBool("Link.NoPauseOnLid", !on);
                 Config::Save();
             });
+            actLinkBlackout = menu->addAction("");
+            actLinkBlackout->setCheckable(true);
+            actLinkBlackout->setChecked(globalCfg.GetBool("Link.BlackWhenClosed"));
+            linkTexts.push_back({actLinkBlackout, "menu.blackout"});
+            connect(actLinkBlackout, &QAction::toggled, this, [this](bool on)
+            {
+                globalCfg.SetBool("Link.BlackWhenClosed", on);
+                Config::Save();
+            });
             actLinkAutoConnect = menu->addAction("");
             actLinkAutoConnect->setCheckable(true);
             actLinkAutoConnect->setChecked(globalCfg.GetBool("Link.AutoConnect"));
@@ -2212,7 +2221,12 @@ void MainWindow::onLinkTick()
         linkPausedByLoss = true;
         if (Link::NoteShown(Link::Note::Pause)) emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.paused").c_str());
     }
-    if (st == Link::State::Disconnected) linkPausedByLoss = false;
+    if (st == Link::State::Disconnected)
+    {
+        linkPausedByLoss = false;
+        linkPausedByLid = false;
+        panel->setBlackout(false);
+    }
     lastState = st;
 
     if (st == Link::State::Disconnected) return;
@@ -2323,6 +2337,10 @@ void MainWindow::onLinkTick()
                 if (Link::NoteShown(Link::Note::Pause)) emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.resumed").c_str());
             }
         }
+        // closed and paused: everything black if wanted (nothing lit on an OLED)
+        panel->setBlackout(linkPausedByLid && !emuThread->emuIsRunning() &&
+                           actLinkBlackout && actLinkBlackout->isChecked());
+
         // the 3DS needs to know: sleep when closed, or stay awake (game runs on)
         static uint32_t optsConn = 0;
         static int optsSent = -1;

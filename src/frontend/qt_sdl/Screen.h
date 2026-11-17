@@ -20,6 +20,7 @@
 #define SCREEN_H
 
 #include <optional>
+#include <atomic>
 #include <deque>
 #include <map>
 
@@ -75,6 +76,9 @@ public:
     // mode 0 = hidden, 1 = fixed, 2 = drifting slowly and dimmer (kind to OLED screens),
     // 3 = jumps every 2 minutes between 6 places one below the other near the top
     void osdSetStatus(const char* text, int mode);
+    // melonDS Link: everything black (nothing lit on an OLED), e.g. while the 3DS is closed
+    void setBlackout(bool on) { blackout = on; }
+    std::atomic<bool> blackout { false };
 
     virtual void drawScreen() {}// = 0;
 

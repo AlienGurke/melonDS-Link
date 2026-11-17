@@ -128,6 +128,9 @@ stehen zum Anpassen in `melonDS-Link/Language/*.txt` (PC; eine neue Datei, z. B.
 erscheint als weitere Sprache) und `sd:/3ds/melonDS-Link/Language/*.txt` (3DS).
 
 **Einstellungen in melonDS (Menü 3DS Link):**
+- *Bild schwarz, solange der 3DS zugeklappt ist* (Standard: aus): während das Spiel
+  wegen des Zuklappens pausiert, ist das Bild in melonDS komplett schwarz, auch ohne
+  Akku-/WLAN-Anzeige (auf einem OLED leuchtet dann nichts).
 - *Beim Start automatisch verbinden* – mit der zuletzt eingegebenen IP.
 - *Spiel pausieren, wenn der 3DS getrennt wird* (Standard: an).
 - *Spiel pausieren, wenn der 3DS zugeklappt wird* (Standard: an): der 3DS meldet das

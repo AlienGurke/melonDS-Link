@@ -35,6 +35,7 @@ const Entry kTexts[] = {
     {"menu.language", "Language", "Sprache"},
     {"menu.debug", "Debug", "Debug"},
     {"menu.pauseonlid", "Pause the game when the 3DS is closed", "Spiel pausieren, wenn der 3DS zugeklappt wird"},
+    {"menu.blackout", "Screen black while the 3DS is closed (game paused)", "Bild schwarz, solange der 3DS zugeklappt ist (Spiel pausiert)"},
     {"menu.autoconnect", "Connect automatically when melonDS starts", "Beim Start automatisch verbinden"},
     {"menu.status", "Show 3DS battery and WiFi", "3DS-Akku und WLAN anzeigen"},
     {"status.mode.off", "Off", "Aus"},

@@ -944,6 +944,7 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
 
     // fill background
     painter.fillRect(event->rect(), QColor::fromRgb(0, 0, 0));
+    if (blackout) return;   // melonDS Link: all black while the 3DS is closed
 
     auto emuThread = emuInstance->getEmuThread();
     
@@ -1265,6 +1266,13 @@ void ScreenPanelGL::drawScreen()
     glDisable(GL_STENCIL_TEST);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
+
+    if (blackout)
+    {
+        // melonDS Link: all black while the 3DS is closed (nothing lit on an OLED)
+        glContext->SwapBuffers();
+        return;
+    }
 
     glViewport(0, 0, w, h);
 
