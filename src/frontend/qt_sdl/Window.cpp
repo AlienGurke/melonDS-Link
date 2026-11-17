@@ -719,7 +719,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 Config::Save();
             });
             // 3DS battery and WiFi on the PC screen
-            linkStatusMode = std::clamp(globalCfg.GetInt("Link.StatusMode"), 0, 7);
+            linkStatusMode = std::clamp(globalCfg.GetInt("Link.StatusMode"), 0, 8);
             linkStatusMenu = menu->addMenu("");
             linkMenus.push_back({linkStatusMenu, "menu.status"});
             connect(linkStatusMenu, &QMenu::aboutToShow, this, [this]
@@ -727,10 +727,13 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 linkStatusMenu->clear();
                 auto* group = new QActionGroup(linkStatusMenu);
                 static const char* keys[] = {"status.mode.off", "status.mode.always", "status.mode.moving"};
-                for (int m = 0; m < 8; m++)
+                // menu order; 8 = wandering over the side (added later, so the number is 8)
+                static const int order[] = {0, 1, 2, 8, 3, 4, 5, 6, 7};
+                for (int m : order)
                 {
                     static const int mins[] = {5, 10, 20, 30, 60};
-                    QString label = m < 3 ? Link::Tr(keys[m]) : Link::Tr("status.mode.every").arg(mins[m - 3]);
+                    QString label = m == 8 ? Link::Tr("status.mode.wander")
+                                  : m < 3 ? Link::Tr(keys[m]) : Link::Tr("status.mode.every").arg(mins[m - 3]);
                     QAction* a = linkStatusMenu->addAction(label);
                     a->setCheckable(true);
                     a->setChecked(m == linkStatusMode);
@@ -741,7 +744,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         globalCfg.SetInt("Link.StatusMode", m);
                         Config::Save();
                     });
-                    if (m == 2) linkStatusMenu->addSeparator();
+                    if (m == 8) linkStatusMenu->addSeparator();
                 }
                 // which lines (one below the other)
                 linkStatusMenu->addSeparator();
@@ -2287,6 +2290,7 @@ void MainWindow::onLinkTick()
         if (cs.known && st == Link::State::Connected)
         {
             if (linkStatusMode == 1 || linkStatusMode == 2) shownMode = linkStatusMode;
+            else if (linkStatusMode == 8) shownMode = 3;
             else if (linkStatusMode >= 3)
             {
                 static const int mins[] = {5, 10, 20, 30, 60};

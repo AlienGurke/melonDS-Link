@@ -72,7 +72,8 @@ public:
     void osdSetEnabled(bool enabled);
     void osdAddMessage(unsigned int color, const char* msg);
     // melonDS Link: up to two lines in the top right corner (UTF-8, '\n' between).
-    // mode 0 = hidden, 1 = fixed, 2 = drifting slowly and dimmer (kind to OLED screens)
+    // mode 0 = hidden, 1 = fixed, 2 = drifting slowly and dimmer (kind to OLED screens),
+    // 3 = like 2, but wandering down over a large part of the height (no pixel stays lit)
     void osdSetStatus(const char* text, int mode);
 
     virtual void drawScreen() {}// = 0;
@@ -132,7 +133,7 @@ protected:
     std::string statusText;
     int statusMode = 0;
     bool statusDirty = false;
-    QPoint statusPos(int areaWidth, int line);
+    QPoint statusPos(int areaWidth, int areaHeight, int line);
 
     QPixmap splashLogo;
     OSDItem splashText[3];

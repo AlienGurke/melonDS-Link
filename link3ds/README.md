@@ -136,7 +136,9 @@ erscheint als weitere Sprache) und `sd:/3ds/melonDS-Link/Language/*.txt` (3DS).
   Spiel läuft weiter.
 - *3DS-Akku und WLAN anzeigen* (oben rechts in melonDS, untereinander; Akku und WLAN
   einzeln abschaltbar): aus, immer, immer und leicht wandernd (dunkler, schont
-  OLED-Bildschirme) oder alle 5/10/20/30/60 Minuten für ein paar Sekunden.
+  OLED-Bildschirme), immer und an der Seite nach unten wandernd (bis 70 % der Höhe und
+  zurück in 40 Minuten – kein Pixel bleibt lange an) oder alle 5/10/20/30/60 Minuten
+  für ein paar Sekunden.
 - *Hinweise in melonDS*: welche Meldungen erscheinen (verbunden/getrennt, Spielstand,
   ROM kopiert, Screenshot, Pause, Akku) – alle an, Fehler kommen immer.
   Den aktuellen Stand zeigt auch das Menü 3DS Link selbst.

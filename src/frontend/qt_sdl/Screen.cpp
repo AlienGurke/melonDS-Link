@@ -738,10 +738,23 @@ void ScreenPanel::osdSetStatus(const char* text, int mode)
     osdMutex.unlock();
 }
 
-QPoint ScreenPanel::statusPos(int areaWidth, int line)
+QPoint ScreenPanel::statusPos(int areaWidth, int areaHeight, int line)
 {
     int dx = 0, dy = 0;
-    if (statusMode == 2)
+    if (statusMode == 3)
+    {
+        // goes down to 70 % of the height and back up within 40 minutes, at an
+        // even pace: every spot is only covered for a short part of the time
+        double t = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+        double phase = std::fmod(t, 2400.0) / 2400.0;                    // 0..1
+        double tri = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;    // 0..1..0
+        int total = 0;
+        for (int i = 0; i < statusLines; i++) total += statusItems[i].bitmap.height();
+        int range = (int)((areaHeight - 2 * (int)kOSDMargin - total) * 0.7);
+        dy = range > 0 ? (int)(tri * range) : 0;
+        dx = (int)(30.0 * (0.5 - 0.5 * std::cos(t * 6.283185307 / 613.0)));
+    }
+    else if (statusMode == 2)
     {
         // wanders a little all the time (one pixel every few seconds), so no
         // pixel of an OLED shows the same thing for long
@@ -775,7 +788,7 @@ void ScreenPanel::osdUpdate()
                 it.id = (osdID++) & 0x7FFFFFFF;
                 it.timestamp = QDateTime::currentMSecsSinceEpoch();
                 osdFromUtf8(it.text, sizeof(it.text), line.c_str());
-                it.color = statusMode == 2 ? 0x787878 : 0xD0D0D0;   // much dimmer when it moves (OLED)
+                it.color = statusMode >= 2 ? 0x787878 : 0xD0D0D0;   // much dimmer when it moves (OLED)
                 it.rainbowstart = -1;
                 osdRenderItem(&it);
                 statusLines++;
@@ -988,7 +1001,7 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
             y += item.bitmap.height();
             it++;
         }
-        for (int i = 0; i < statusLines; i++) painter.drawImage(statusPos(width(), i), statusItems[i].bitmap);
+        for (int i = 0; i < statusLines; i++) painter.drawImage(statusPos(width(), height(), i), statusItems[i].bitmap);
 
         osdMutex.unlock();
     }
@@ -1390,7 +1403,7 @@ void ScreenPanelGL::drawScreen()
         for (int i = 0; i < statusLines; i++)
         {
             if (!osdTextures.count(statusItems[i].id)) continue;
-            QPoint pos = statusPos((int)(w / factor), i);
+            QPoint pos = statusPos((int)(w / factor), (int)(h / factor), i);
             glBindTexture(GL_TEXTURE_2D, osdTextures[statusItems[i].id]);
             glUniform2i(osdPosULoc, pos.x(), pos.y());
             glUniform2i(osdSizeULoc, statusItems[i].bitmap.width(), statusItems[i].bitmap.height());
