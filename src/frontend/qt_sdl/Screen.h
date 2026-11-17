@@ -73,7 +73,7 @@ public:
     void osdAddMessage(unsigned int color, const char* msg);
     // melonDS Link: up to two lines in the top right corner (UTF-8, '\n' between).
     // mode 0 = hidden, 1 = fixed, 2 = drifting slowly and dimmer (kind to OLED screens),
-    // 3 = like 2, but wandering down over a large part of the height (no pixel stays lit)
+    // 3 = jumps every 2 minutes between 6 places one below the other near the top
     void osdSetStatus(const char* text, int mode);
 
     virtual void drawScreen() {}// = 0;

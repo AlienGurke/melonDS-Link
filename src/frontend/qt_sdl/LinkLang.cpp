@@ -51,7 +51,7 @@ const Entry kTexts[] = {
     {"notes.screenshot", "Screenshot saved", "Screenshot gespeichert"},
     {"notes.pause", "Game paused / continues", "Spiel pausiert / geht weiter"},
     {"notes.battery", "Battery low", "Akku schwach"},
-    {"status.mode.wander", "Always, wandering down the side (OLED, safest)", "Immer, wandert an der Seite nach unten (OLED, am sichersten)"},
+    {"status.mode.wander", "Always, changes place every 2 minutes (OLED, safest)", "Immer, wechselt alle 2 Minuten die Stelle (OLED, am sichersten)"},
     {"status.mode.every", "Briefly every %1 minutes", "Alle %1 Minuten kurz"},
     {"pause.lid", "3DS Link: game paused - the 3DS was closed", "3DS Link: Spiel pausiert – der 3DS wurde zugeklappt"},
     {"battery.30", "3DS battery at %1 % - you may want to plug in the charger.", "3DS-Akku bei %1 % – am besten schon mal das Ladekabel anschließen."},

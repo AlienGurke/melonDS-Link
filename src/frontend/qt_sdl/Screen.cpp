@@ -743,16 +743,16 @@ QPoint ScreenPanel::statusPos(int areaWidth, int areaHeight, int line)
     int dx = 0, dy = 0;
     if (statusMode == 3)
     {
-        // goes down to 70 % of the height and back up within 40 minutes, at an
-        // even pace: every spot is only covered for a short part of the time
-        double t = QDateTime::currentMSecsSinceEpoch() / 1000.0;
-        double phase = std::fmod(t, 2400.0) / 2400.0;                    // 0..1
-        double tri = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;    // 0..1..0
+        // jumps every 2 minutes between 6 places one below the other near the
+        // top (never overlapping): each pixel is lit at most 1/6 of the time
         int total = 0;
         for (int i = 0; i < statusLines; i++) total += statusItems[i].bitmap.height();
-        int range = (int)((areaHeight - 2 * (int)kOSDMargin - total) * 0.7);
-        dy = range > 0 ? (int)(tri * range) : 0;
-        dx = (int)(30.0 * (0.5 - 0.5 * std::cos(t * 6.283185307 / 613.0)));
+        static const int order[6] = {0, 3, 1, 4, 2, 5};   // far apart one after the other
+        qint64 step = QDateTime::currentMSecsSinceEpoch() / 120000;
+        int slot = order[step % 6];
+        dy = slot * (total + 4);
+        if (dy + total + 2 * (int)kOSDMargin > areaHeight) dy = 0;   // tiny window
+        dx = (int)((step * 7) % 4) * 8;
     }
     else if (statusMode == 2)
     {
