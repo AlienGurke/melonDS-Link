@@ -1684,8 +1684,11 @@ static void videoThread(void* arg)
     u32 lastSeq = 0, baseSeq = 0;
     u64 lastPresent = 0;
 
+    int burst = 0;
     while (g_running)
     {
+        /* never hog the CPU, however much picture data comes in */
+        if (++burst >= 48) { burst = 0; svcSleepThread(500000); }
         /* big transfer or SD card write: leave the socket service alone, even
            if packets keep coming (they wait in the buffer or get resent) */
         if (g_bulkActive) { svcSleepThread(20000000); continue; }
@@ -2172,11 +2175,15 @@ int main(int argc, char** argv)
 
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    /* lower number = higher priority. The network threads mostly sleep in
-       their own short sleeps, so they can safely go before the UI (main thread). */
+    /* lower number = higher priority. The input thread is tiny and sleeps 4 ms
+       per round: it goes first. The video and server threads come AFTER the main
+       thread: with a lot of picture data they can keep the CPU busy all the time,
+       and above the main thread they starved it - the app froze and not even the
+       HOME button worked any more. The main thread sleeps most of each frame
+       (waiting for the screen), so they still get plenty of time. */
     Thread inp = threadCreate(inputThread, NULL, 0x4000, prio - 2, -2, false);
-    Thread vid = threadCreate(videoThread, NULL, 0x4000, prio - 1, -2, false);
-    Thread srv = threadCreate(serverThread, NULL, 0x4000, prio - 1, -2, false);
+    Thread vid = threadCreate(videoThread, NULL, 0x4000, prio + 1, -2, false);
+    Thread srv = threadCreate(serverThread, NULL, 0x4000, prio + 1, -2, false);
 
     u32 lastVideoFrames = (u32)-1;
     bool lastZoom = !g_zoom, lastHaveVideo = true;
