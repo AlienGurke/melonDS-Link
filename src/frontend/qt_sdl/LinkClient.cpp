@@ -248,8 +248,11 @@ bool Client::requestLocked(uint16_t cmd, const void* payload, uint32_t len,
 
     {
         LinkHeader r = {};
-        // the 3DS may need a while for SD card work: wait up to 30 s
-        if (!recvAll(s, &r, sizeof(r), 30000)) goto fail;
+        // the 3DS may need a while for SD card work: wait up to 30 s. Asking for
+        // events is answered at once: there a silent 3DS (closed, asleep, out of
+        // reach) is noticed after 4 s, so reconnecting can start right away
+        int wait = (cmd == LINK_CMD_POLLEVENT || cmd == LINK_CMD_PING) ? 4000 : 30000;
+        if (!recvAll(s, &r, sizeof(r), wait)) goto fail;
         if (r.magic != LINK_MAGIC || r.seq != h.seq || r.cmd != (cmd | LINK_RESP) ||
             r.len > LINK_MAX_PAYLOAD)
             goto fail;
@@ -611,6 +614,7 @@ std::string Client::Tr3DS(const char* key)
 
 bool Client::SetOptions(uint32_t opts)
 {
+    options = opts;
     uint16_t status;
     return Request(LINK_CMD_OPTIONS, &opts, 4, status) && status == LINK_OK;
 }
@@ -694,6 +698,12 @@ void Client::worker(std::string host)
             if (remoteLang.empty()) remoteLang = "en";
         }
         videoWanted = (hello.flags & LINK_HELLO_VIDEO_OFF) == 0;
+        {
+            // a fresh connection: the 3DS is open (it reports otherwise right away)
+            std::lock_guard<std::mutex> lock(inputMutex);
+            console.lidClosed = false;
+            lidClosed = false;
+        }
 
         // --- UDP input stream ---
         udpAddr = tcpAddr;
@@ -758,6 +768,13 @@ void Client::worker(std::string host)
                 if (r == 0) break;
                 lastPing = t;
             }
+            // closed (and it goes to sleep): drop the connection now and keep
+            // knocking, so it is back as soon as the 3DS wakes up
+            if (lidClosed && !(options.load() & LINK_OPT_KEEP_AWAKE))
+            {
+                lostByLid = true;
+                break;
+            }
             {
                 std::unique_lock<std::mutex> lock(reqMutex, std::try_to_lock);
                 if (lock.owns_lock() && tcpSock == -1) break;
@@ -810,8 +827,16 @@ void Client::worker(std::string host)
             std::lock_guard<std::mutex> lock(inputMutex);
             lastInput = InputSnapshot();
         }
-        if (!stopRequested && everConnected)
+        if (!stopRequested && everConnected && !lostByLid)
             if (NoteShown(Note::Connection)) pushMessage(TrS("client.lost"));
+        if (lostByLid)
+        {
+            // it is falling asleep right now: knocking in the next moment would
+            // only get a connection that dies with the sleep
+            for (int i = 0; i < 15 && !stopRequested; i++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        lostByLid = false;
     }
 
     state = State::Disconnected;

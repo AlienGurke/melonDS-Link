@@ -213,6 +213,8 @@ private:
     std::atomic<bool> resumeWanted { false };
     std::atomic<bool> videoWanted { true };   // bottom screen picture on (3DS setting)
     std::atomic<bool> lidClosed { false };    // closed (and awake): nobody sees the picture
+    std::atomic<uint32_t> options { 0 };      // LINK_OPT_* last sent
+    bool lostByLid = false;                   // worker thread only
     std::string remoteLang = "en";
     bool haveBakList = false, haveRestore = false;
     std::string bakListRom, restoreRom;
