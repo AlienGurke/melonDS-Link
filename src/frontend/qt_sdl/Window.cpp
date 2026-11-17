@@ -718,14 +718,31 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 globalCfg.SetBool("Link.AutoConnect", on);
                 Config::Save();
             });
-            actLinkShowStatus = menu->addAction("");
-            actLinkShowStatus->setCheckable(true);
-            actLinkShowStatus->setChecked(globalCfg.GetBool("Link.ShowStatus"));
-            linkTexts.push_back({actLinkShowStatus, "menu.showstatus"});
-            connect(actLinkShowStatus, &QAction::toggled, this, [this](bool on)
+            // 3DS battery and WiFi on the PC screen
+            linkStatusMode = std::clamp(globalCfg.GetInt("Link.StatusMode"), 0, 7);
+            linkStatusMenu = menu->addMenu("");
+            linkMenus.push_back({linkStatusMenu, "menu.status"});
+            connect(linkStatusMenu, &QMenu::aboutToShow, this, [this]
             {
-                globalCfg.SetBool("Link.ShowStatus", on);
-                Config::Save();
+                linkStatusMenu->clear();
+                auto* group = new QActionGroup(linkStatusMenu);
+                static const char* keys[] = {"status.mode.off", "status.mode.always", "status.mode.moving"};
+                for (int m = 0; m < 8; m++)
+                {
+                    static const int mins[] = {5, 10, 20, 30, 60};
+                    QString label = m < 3 ? Link::Tr(keys[m]) : Link::Tr("status.mode.every").arg(mins[m - 3]);
+                    QAction* a = linkStatusMenu->addAction(label);
+                    a->setCheckable(true);
+                    a->setChecked(m == linkStatusMode);
+                    group->addAction(a);
+                    connect(a, &QAction::triggered, this, [this, m]
+                    {
+                        linkStatusMode = m;
+                        globalCfg.SetInt("Link.StatusMode", m);
+                        Config::Save();
+                    });
+                    if (m == 2) linkStatusMenu->addSeparator();
+                }
             });
 
             menu->addSeparator();
@@ -2177,25 +2194,35 @@ void MainWindow::onLinkTick()
                     // the lowest threshold reached (no three messages at once)
                     int level = cs.battery <= 10 ? 10 : cs.battery <= 20 ? 20 : 30;
                     warnedAt = level;
-                    const char* key = level <= 10 ? "battery.critical" : "battery.low";
+                    const char* key = level <= 10 ? "battery.10" : level <= 20 ? "battery.20" : "battery.30";
+                    const char* key3 = level <= 10 ? "battery.10.3ds" : "battery.low.3ds";
                     emuInstance->osdAddMessage(0xFFA040, "%s", Link::Tr(key).arg(cs.battery).toStdString().c_str());
-                    std::string t3 = QString::fromStdString(Link::Get().Tr3DS(key)).arg(cs.battery).toStdString();
+                    std::string t3 = QString::fromStdString(Link::Get().Tr3DS(key3)).arg(cs.battery).toStdString();
                     std::thread([t3] { Link::Get().SetStatusText(t3); }).detach();
                     break;
                 }
             }
         }
-        // shown briefly every 10 minutes (and after connecting): nothing stays
-        // on the screen, so nothing burns into an OLED
+        // battery/WiFi in the top right corner: always (fixed or slowly moving,
+        // kind to OLEDs) or for a few seconds every 5..60 minutes
         int64_t nowS = QDateTime::currentSecsSinceEpoch();
         uint32_t conn = Link::Get().ConnectionCount();
-        if (actLinkShowStatus && actLinkShowStatus->isChecked() && cs.known && st == Link::State::Connected &&
-            (conn != statusConn || nowS - lastStatusShown >= 600))
+        int shownMode = 0;
+        if (cs.known && st == Link::State::Connected)
         {
-            statusConn = conn;
-            lastStatusShown = nowS;
-            emuInstance->osdAddMessage(0, "%s", linkStatusText().toStdString().c_str());
+            if (linkStatusMode == 1 || linkStatusMode == 2) shownMode = linkStatusMode;
+            else if (linkStatusMode >= 3)
+            {
+                static const int mins[] = {5, 10, 20, 30, 60};
+                if (conn != statusConn || nowS - lastStatusShown >= mins[linkStatusMode - 3] * 60)
+                {
+                    statusConn = conn;
+                    lastStatusShown = nowS;
+                }
+                if (nowS - lastStatusShown < 6) shownMode = 2;
+            }
         }
+        panel->osdSetStatus(shownMode ? linkStatusText().toStdString().c_str() : "", shownMode);
 
         // closed: pause (setting) - the 3DS reports it before it goes to sleep
         bool pauseOnLid = !actLinkPauseOnLid || actLinkPauseOnLid->isChecked();

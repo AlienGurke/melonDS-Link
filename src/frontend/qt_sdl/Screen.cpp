@@ -56,6 +56,87 @@ using namespace QNativeInterface;
 
 
 const u32 kOSDMargin = 6;
+
+// melonDS Link: the OSD font only has ASCII. German texts get their own glyphs
+// for ä ö ü Ä Ö Ü ß (made from the plain letters), coded as 0x80..0x86.
+static u16 osdExtraGlyphs[7][16];
+static bool osdExtraReady = false;
+
+static void osdMakeExtraGlyphs()
+{
+    if (osdExtraReady) return;
+    osdExtraReady = true;
+    const char base[6] = {'a', 'o', 'u', 'A', 'O', 'U'};
+    for (int i = 0; i < 6; i++)
+    {
+        const u16* src = &::font[(base[i] - 0x10) << 4];
+        u16* g = osdExtraGlyphs[i];
+        memcpy(g, src, 16 * sizeof(u16));
+        int w = src[0];
+        u16 dots = (u16)((3u << 1) | (3u << (w - 3)));   // two dots, 2 pixels wide
+        if (i < 3)
+            g[4 + 0] = dots;                           // small letters start at row 2
+        else
+        {
+            // capitals fill rows 0-9: squeeze out two middle rows, dots on top
+            u16 rows[12];
+            for (int r = 0; r < 12; r++) rows[r] = src[4 + r];
+            int k = 2;
+            for (int r = 0; r < 10; r++) if (r != 3 && r != 4) g[4 + k++] = rows[r];
+            g[4 + 0] = dots;
+            g[4 + 1] = 0;
+        }
+    }
+    // sharp s
+    static const char* ss[10] = {".####..", "##..##.", "##..##.", "##.##..", "##.##..",
+                                 "##..##.", "##...##", "##...##", "##.###.", "##.##.."};
+    u16* g = osdExtraGlyphs[6];
+    memset(g, 0, 16 * sizeof(u16));
+    g[0] = 7;
+    for (int r = 0; r < 10; r++)
+        for (int c = 0; c < 7; c++)
+            if (ss[r][c] == '#') g[4 + r] |= (u16)(1u << c);
+}
+
+static const u16* osdGlyph(u8 ch)
+{
+    if (ch >= 0x80 && ch <= 0x86) { osdMakeExtraGlyphs(); return osdExtraGlyphs[ch - 0x80]; }
+    if (ch < 0x10 || ch > 0x7E) ch = 0x7F;
+    return &::font[(ch - 0x10) << 4];
+}
+
+// UTF-8 -> the OSD's 8 bit code (see above); other characters become '?'
+static void osdFromUtf8(char* out, size_t outSize, const char* in)
+{
+    size_t o = 0;
+    const u8* p = (const u8*)in;
+    while (*p && o + 1 < outSize)
+    {
+        u32 cp = *p++;
+        if (cp >= 0x80)
+        {
+            int extra = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : 0;
+            cp &= extra == 3 ? 0x07 : extra == 2 ? 0x0F : 0x1F;
+            for (int i = 0; i < extra && (*p & 0xC0) == 0x80; i++) cp = (cp << 6) | (*p++ & 0x3F);
+        }
+        char c;
+        switch (cp)
+        {
+        case 0xE4: c = (char)0x80; break;   // ä
+        case 0xF6: c = (char)0x81; break;   // ö
+        case 0xFC: c = (char)0x82; break;   // ü
+        case 0xC4: c = (char)0x83; break;   // Ä
+        case 0xD6: c = (char)0x84; break;   // Ö
+        case 0xDC: c = (char)0x85; break;   // Ü
+        case 0xDF: c = (char)0x86; break;   // ß
+        case 0x2013: case 0x2014: c = '-'; break;
+        case 0x2026: c = '.'; break;
+        default: c = cp < 0x80 ? (char)cp : '?'; break;
+        }
+        out[o++] = c;
+    }
+    out[o] = 0;
+}
 const int kLogoWidth = 192;
 
 
@@ -447,10 +528,7 @@ void ScreenPanel::osdLayoutText(const char* text, int* width, int* height, int* 
 		}
 		else
         {
-            u32 ch = text[i];
-            if (ch < 0x10 || ch > 0x7E) ch = 0x7F;
-
-            ptr = &::font[(ch-0x10) << 4];
+            ptr = (u16*)osdGlyph((u8)text[i]);
             glyphsize = ptr[0];
             if (!glyphsize) glyphsize = 6;
             else            glyphsize += 2; // space around the character
@@ -543,10 +621,7 @@ void ScreenPanel::osdRenderItem(OSDItem* item)
 		}
 		else
         {
-            u32 ch = text[i];
-            if (ch < 0x10 || ch > 0x7E) ch = 0x7F;
-
-            ptr = &::font[(ch-0x10) << 4];
+            ptr = (u16*)osdGlyph((u8)text[i]);
             int glyphsize = ptr[0];
             if (!glyphsize) x += 6;
             else
@@ -641,7 +716,7 @@ void ScreenPanel::osdAddMessage(unsigned int color, const char* text)
 
     item.id = (osdID++) & 0x7FFFFFFF;
     item.timestamp = QDateTime::currentMSecsSinceEpoch();
-    strncpy(item.text, text, 255); item.text[255] = '\0';
+    osdFromUtf8(item.text, sizeof(item.text), text);
     item.color = color;
     item.rendered = false;
     item.rainbowstart = -1;
@@ -651,9 +726,52 @@ void ScreenPanel::osdAddMessage(unsigned int color, const char* text)
     osdMutex.unlock();
 }
 
+void ScreenPanel::osdSetStatus(const char* text, int mode)
+{
+    osdMutex.lock();
+    if (mode != statusMode || statusText != text)
+    {
+        statusMode = mode;
+        statusText = text;
+        statusDirty = true;
+    }
+    osdMutex.unlock();
+}
+
+QPoint ScreenPanel::statusPos(int areaWidth)
+{
+    int dx = 0, dy = 0;
+    if (statusMode == 2)
+    {
+        // wanders a little all the time (one pixel every few seconds), so no
+        // pixel of an OLED shows the same thing for long
+        double t = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+        dx = (int)(30.0 * (0.5 - 0.5 * std::cos(t * 6.283185307 / 613.0)));
+        dy = (int)(20.0 * (0.5 - 0.5 * std::cos(t * 6.283185307 / 457.0)));
+    }
+    return QPoint(areaWidth - (int)kOSDMargin - statusItem.bitmap.width() - dx, (int)kOSDMargin + dy);
+}
+
 void ScreenPanel::osdUpdate()
 {
     osdMutex.lock();
+
+    if (statusDirty)
+    {
+        statusDirty = false;
+        if (statusRendered) osdDeleteItem(&statusItem);
+        statusRendered = false;
+        if (statusMode != 0 && !statusText.empty())
+        {
+            statusItem.id = (osdID++) & 0x7FFFFFFF;
+            statusItem.timestamp = QDateTime::currentMSecsSinceEpoch();
+            osdFromUtf8(statusItem.text, sizeof(statusItem.text), statusText.c_str());
+            statusItem.color = statusMode == 2 ? 0xB0B0B0 : 0xE0E0E0;   // a bit darker when it moves
+            statusItem.rainbowstart = -1;
+            osdRenderItem(&statusItem);
+            statusRendered = true;
+        }
+    }
 
     qint64 tick_now = QDateTime::currentMSecsSinceEpoch();
     qint64 tick_min = tick_now - 2500;
@@ -858,6 +976,7 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
             y += item.bitmap.height();
             it++;
         }
+        if (statusRendered) painter.drawImage(statusPos(width()), statusItem.bitmap);
 
         osdMutex.unlock();
     }
@@ -1243,7 +1362,10 @@ void ScreenPanelGL::drawScreen()
             OSDItem& item = *it;
 
             if (!osdTextures.count(item.id))
+            {
+                it++;   // (was "continue" without moving on: endless loop)
                 continue;
+            }
 
             glBindTexture(GL_TEXTURE_2D, osdTextures[item.id]);
             glUniform2i(osdPosULoc, kOSDMargin, y);
@@ -1252,6 +1374,14 @@ void ScreenPanelGL::drawScreen()
 
             y += item.bitmap.height();
             it++;
+        }
+        if (statusRendered && osdTextures.count(statusItem.id))
+        {
+            QPoint pos = statusPos((int)(w / factor));
+            glBindTexture(GL_TEXTURE_2D, osdTextures[statusItem.id]);
+            glUniform2i(osdPosULoc, pos.x(), pos.y());
+            glUniform2i(osdSizeULoc, statusItem.bitmap.width(), statusItem.bitmap.height());
+            glDrawArrays(GL_TRIANGLES, 0, 2*3);
         }
 
         glDisable(GL_BLEND);

@@ -91,6 +91,7 @@ enum StrId
     S_M_BACKUPS, S_B_LOADING, S_B_NONE, S_B_HINT, S_D_RESTORE_T, S_D_RESTORE_1, S_D_RESTORE_2,
     S_D_RESTORE_A, S_RESTORING, S_CONFIRM_HINT,
     S_M_SHOTMODE, S_SHOT_BOTH, S_SHOT_TOP, S_SHOT_BOTTOM, S_SHOT_SEPARATE,
+    S_M_STATUSBAR, S_BAT, S_WIFI,
     S_COUNT
 };
 
@@ -116,6 +117,7 @@ static const char* const g_strs[LANG_COUNT][S_COUNT] = {
         "The game in melonDS is ended for this.", "Load backup", "Loading the backup...",
         "L+R+A confirm   B back",
         "Screenshot shows", "both screens", "top screen", "bottom screen", "both, separate files",
+        "Battery/WiFi at the top", "Battery", "WiFi",
     },
     {   /* Deutsch */
         "melonDS Link", "IP-Adresse:", "verbunden", "wartet...", "Steuerung:", "aktiv", "Bild:",
@@ -139,6 +141,7 @@ static const char* const g_strs[LANG_COUNT][S_COUNT] = {
         "Das Spiel in melonDS wird dafür beendet.", "Backup laden", "Backup wird geladen...",
         "L+R+A bestätigen   B zurück",
         "Screenshot zeigt", "beide Bildschirme", "oberen Bildschirm", "unteren Bildschirm", "beide, eigene Dateien",
+        "Akku/WLAN oben anzeigen", "Akku", "WLAN",
     },
 };
 static char g_tr[S_COUNT][80];   /* current language, already in code page 437 */
@@ -158,6 +161,7 @@ static const char* const g_strKeys[S_COUNT] = {
     "menu_backups", "backups_loading", "backups_none", "backups_hint", "restore_title", "restore_note",
     "restore_note_running", "restore_confirm", "restoring", "confirm_hint",
     "menu_shotmode", "shot_both", "shot_top", "shot_bottom", "shot_separate",
+    "menu_statusbar", "battery", "wifi",
 };
 #define LANG_FILE_VERSION 2   /* files of an older version are written anew */
 static char g_custom[LANG_COUNT][S_COUNT][80];   /* from the files ("" = built-in) */
@@ -394,6 +398,7 @@ static volatile bool g_saveWriting = false;      /* a save is between WRITE and 
 static volatile u64 g_saveWriteTime = 0;
 static volatile bool g_confirmPress = false;     /* L + R + A pressed (input -> main) */
 static int g_shotMode = LINK_SHOT_BOTH;          /* what the screenshot shows (setting) */
+static bool g_statusBar = true;                  /* battery/WiFi top right (setting) */
 /* state of the console, sent to melonDS with every input packet */
 static volatile u8 g_battery = 255, g_wifi = 255;
 static volatile bool g_charging = false, g_lidClosed = false;
@@ -1874,6 +1879,10 @@ static void inputThread(void* arg)
     u64 upSince[32];          /* per key: since when it is released */
     for (int i = 0; i < 32; i++) upSince[i] = 0;
     u32 gen = g_sockGen;
+    LinkInputPacket lastSent;
+    memset(&lastSent, 0, sizeof(lastSent));
+    u64 lastSendTime = 0;
+    int repeatSends = 0;
 
     while (g_running)
     {
@@ -1978,7 +1987,6 @@ static void inputThread(void* arg)
             LinkInputPacket p;
             memset(&p, 0, sizeof(p));
             p.magic = LINK_MAGIC;
-            p.id = packetId++;
             p.keys = gameKeys;
             p.cpadX = cpad.dx;
             p.cpadY = cpad.dy;
@@ -1999,7 +2007,31 @@ static void inputThread(void* arg)
                 p.videoAckMask = g_ackMask;
             }
             LightLock_Unlock(&g_ackLock);
-            sendto(g_udpFd, &p, sizeof(p), 0, (struct sockaddr*)&peer, sizeof(peer));
+
+            /* Only send what is new: a change of the input goes out at once (and
+               twice more, in case one gets lost on the WiFi); receipts for the
+               picture at most every 12 ms; otherwise a sign of life every 50 ms.
+               Saves most of the 250 packets a second (WiFi time and battery). */
+            u64 now = osGetTime();
+            #define NEAR(a, b) ((a) - (b) <= 2 && (b) - (a) <= 2)
+            bool inputChanged = p.keys != lastSent.keys || p.status != lastSent.status ||
+                (p.flags & ~LINK_INPUT_VIDEOACK) != (lastSent.flags & ~LINK_INPUT_VIDEOACK) ||
+                p.touchX != lastSent.touchX || p.touchY != lastSent.touchY ||
+                p.dsTouchX != lastSent.dsTouchX || p.dsTouchY != lastSent.dsTouchY ||
+                !NEAR(p.cpadX, lastSent.cpadX) || !NEAR(p.cpadY, lastSent.cpadY) ||
+                !NEAR(p.cstickX, lastSent.cstickX) || !NEAR(p.cstickY, lastSent.cstickY);
+            #undef NEAR
+            bool ackChanged = p.videoAckSeq != lastSent.videoAckSeq || p.videoAckMask != lastSent.videoAckMask ||
+                (p.flags & LINK_INPUT_VIDEOACK) != (lastSent.flags & LINK_INPUT_VIDEOACK);
+            if (inputChanged) repeatSends = 3;
+            if (repeatSends > 0 || (ackChanged && now - lastSendTime >= 12) || now - lastSendTime >= 50)
+            {
+                if (repeatSends > 0) repeatSends--;
+                p.id = packetId++;
+                sendto(g_udpFd, &p, sizeof(p), 0, (struct sockaddr*)&peer, sizeof(peer));
+                lastSent = p;
+                lastSendTime = now;
+            }
         }
 
         LightLock_Lock(&g_lock);
@@ -2177,6 +2209,7 @@ static void loadConfig(void)
         if (sscanf(line, "zoom=%d", &v) == 1) g_zoom = v != 0;
         else if (sscanf(line, "videooff=%d", &v) == 1) g_videoOff = v != 0;
         else if (sscanf(line, "shotmode=%d", &v) == 1) g_shotMode = v >= 0 && v < LINK_SHOT_MODES ? v : 0;
+        else if (sscanf(line, "statusbar=%d", &v) == 1) g_statusBar = v != 0;
         else if (sscanf(line, "lang=%d", &v) == 1) g_lang = v;
         else if (strncmp(line, "last=", 5) == 0)
         {
@@ -2200,6 +2233,7 @@ static void saveConfig(void)
     fprintf(f, "zoom=%d\n", g_zoom ? 1 : 0);
     fprintf(f, "videooff=%d\n", g_videoOff ? 1 : 0);
     fprintf(f, "shotmode=%d\n", g_shotMode);
+    fprintf(f, "statusbar=%d\n", g_statusBar ? 1 : 0);
     fprintf(f, "lang=%d\n", g_lang);
     fprintf(f, "romdir=%s\n", g_romDir);
     if (g_lastGame[0]) fprintf(f, "last=%s\n", g_lastGame);
@@ -2435,7 +2469,7 @@ int main(int argc, char** argv)
         setBottomBacklight(!g_videoOff && !lidDark);
 
         /* the menu: only what makes sense right now */
-        enum { MI_BACK, MI_GAMES, MI_SHOT, MI_SHOTMODE, MI_BACKUPS, MI_DISPLAY, MI_BOTTOM, MI_TOPOFF, MI_LANG, MI_STOP, MI_QUIT };
+        enum { MI_BACK, MI_GAMES, MI_SHOT, MI_SHOTMODE, MI_BACKUPS, MI_DISPLAY, MI_BOTTOM, MI_TOPOFF, MI_STATUSBAR, MI_LANG, MI_STOP, MI_QUIT };
         int items[12], itemCount = 0;
         bool playing = g_gameStarted && !g_launchPending;
         if (g_gameStarted) items[itemCount++] = MI_BACK;
@@ -2457,6 +2491,7 @@ int main(int argc, char** argv)
         items[itemCount++] = MI_DISPLAY;
         items[itemCount++] = MI_BOTTOM;
         items[itemCount++] = MI_TOPOFF;
+        items[itemCount++] = MI_STATUSBAR;
         items[itemCount++] = MI_LANG;
         if (playing && g_tcpConnected) items[itemCount++] = MI_STOP;
         items[itemCount++] = MI_QUIT;
@@ -2540,6 +2575,10 @@ int main(int argc, char** argv)
                 case MI_DISPLAY: g_zoom = !g_zoom; break;
                 case MI_SHOTMODE:
                     g_shotMode = (g_shotMode + 1) % LINK_SHOT_MODES;
+                    saveConfig();
+                    break;
+                case MI_STATUSBAR:
+                    g_statusBar = !g_statusBar;
                     saveConfig();
                     break;
                 case MI_BOTTOM:
@@ -2651,7 +2690,23 @@ int main(int argc, char** argv)
         snprintf(xi2, sizeof(xi2), "%s", g_xferInfo2);
         LightLock_Unlock(&g_lock);
 
-        setLine(1, "\x1b[36m%s\x1b[0m  \x1b[90mv%u", T(S_TITLE), (unsigned)LINK_VERSION);
+        {
+            /* battery and WiFi top right (setting) */
+            char st[100] = "";
+            if (g_statusBar)
+            {
+                char bat[12] = "?", wifi[8] = "?";
+                if (g_battery <= 100) snprintf(bat, sizeof(bat), "%u%%%s", (unsigned)g_battery, g_charging ? "+" : "");
+                if (g_wifi <= 3)
+                    for (int i = 0; i < 3; i++) wifi[i] = i < g_wifi ? (char)0xDB : (char)0xFA;   /* bars (code page 437) */
+                if (g_wifi <= 3) wifi[3] = 0;
+                const char* batColor = g_charging ? "\x1b[32m" : g_battery <= 20 ? "\x1b[31m" : g_battery <= 30 ? "\x1b[33m" : "\x1b[37m";
+                int visible = (int)(strlen(T(S_BAT)) + 1 + strlen(bat) + 2 + strlen(T(S_WIFI)) + 1 + 3);
+                snprintf(st, sizeof(st), "\x1b[1;%dH\x1b[90m%s %s%s \x1b[90m %s \x1b[37m%s", 51 - visible,
+                         T(S_BAT), batColor, bat, T(S_WIFI), wifi);
+            }
+            setLine(1, "\x1b[36m%s\x1b[0m  \x1b[90mv%u%s", T(S_TITLE), (unsigned)LINK_VERSION, st);
+        }
         setLine(3, "%-12s \x1b[33m%s", T(S_IP), inet_ntoa(ip));
         setLine(4, "%-12s %s%s", "melonDS:", g_tcpConnected ? "\x1b[32m" : "\x1b[90m", g_tcpConnected ? T(S_CONNECTED) : T(S_WAITING));
         setLine(5, "%-12s %s%s\x1b[0m   %s %s%s", T(S_CONTROLS), in.haveUdpPeer ? "\x1b[32m" : "\x1b[90m",
@@ -2755,6 +2810,7 @@ int main(int argc, char** argv)
                 case MI_DISPLAY: snprintf(label, sizeof(label), "%s: %s", T(S_M_DISPLAY), zoom ? T(S_ENLARGED) : T(S_ORIGINAL)); break;
                 case MI_BOTTOM: snprintf(label, sizeof(label), "%s: %s", T(S_M_BOTTOM), g_videoOff ? T(S_OFF) : T(S_ON)); break;
                 case MI_TOPOFF: snprintf(label, sizeof(label), "%s", T(S_M_TOPOFF)); break;
+                case MI_STATUSBAR: snprintf(label, sizeof(label), "%s: %s", T(S_M_STATUSBAR), g_statusBar ? T(S_ON) : T(S_OFF)); break;
                 case MI_LANG: snprintf(label, sizeof(label), "%s: %s", T(S_M_LANG), T(S_LANGNAME)); break;
                 case MI_STOP: snprintf(label, sizeof(label), "%s", T(S_M_STOP)); break;
                 case MI_BACKUPS:

@@ -479,30 +479,31 @@ bool Client::TakeLaunchRequest(LaunchRequest& out)
     return true;
 }
 
-void Client::pollEvents()
+int Client::pollEvents()
 {
     uint16_t status;
     std::vector<uint8_t> out;
-    if (TryRequest(LINK_CMD_POLLEVENT, nullptr, 0, status, &out) != 1 || status != LINK_OK) return;
-    if (out.size() < sizeof(LinkEvent)) return;
+    int res = TryRequest(LINK_CMD_POLLEVENT, nullptr, 0, status, &out);
+    if (res != 1 || status != LINK_OK) return res;
+    if (out.size() < sizeof(LinkEvent)) return 1;
     LinkEvent ev;
     memcpy(&ev, out.data(), sizeof(ev));
-    if (out.size() < sizeof(ev) + ev.romPathLen + ev.savePathLen) return;
+    if (out.size() < sizeof(ev) + ev.romPathLen + ev.savePathLen) return 1;
     if (ev.type == LINK_EVENT_ANSWER)
     {
         std::lock_guard<std::mutex> lock(eventMutex);
         answerId = (uint32_t)ev.romSize;
         answerChoice = (int)ev.reserved;
         haveAnswer = true;
-        return;
+        return 1;
     }
     if (ev.type == LINK_EVENT_LANGUAGE)
     {
         std::lock_guard<std::mutex> lock(eventMutex);
         remoteLang.assign((const char*)out.data() + sizeof(ev), std::min<size_t>(ev.romPathLen, 3));
-        return;
+        return 1;
     }
-    if (ev.type == LINK_EVENT_STOPGAME) { stopWanted = true; return; }
+    if (ev.type == LINK_EVENT_STOPGAME) { stopWanted = true; return 1; }
     if (ev.type == LINK_EVENT_BACKUPS || ev.type == LINK_EVENT_RESTORE)
     {
         std::string rom((const char*)out.data() + sizeof(ev), ev.romPathLen);
@@ -515,22 +516,22 @@ void Client::pollEvents()
             restoreToken = (uint32_t)ev.romSize;
             haveRestore = true;
         }
-        return;
+        return 1;
     }
-    if (ev.type == LINK_EVENT_RESUME) { resumeWanted = true; return; }
+    if (ev.type == LINK_EVENT_RESUME) { resumeWanted = true; return 1; }
     if (ev.type == LINK_EVENT_VIDEO)
     {
         bool on = ev.reserved != 0;
         if (on && !videoWanted) videoResync = true;   // the 3DS has nothing: send everything
         videoWanted = on;
-        return;
+        return 1;
     }
     if (ev.type == LINK_EVENT_SCREENSHOT)
     {
         screenshotWanted = (int)(ev.reserved < LINK_SHOT_MODES ? ev.reserved : LINK_SHOT_BOTH);
-        return;
+        return 1;
     }
-    if (ev.type != LINK_EVENT_LAUNCH) return;
+    if (ev.type != LINK_EVENT_LAUNCH) return 1;
 
     LaunchRequest r;
     r.romSize = ev.romSize;
@@ -539,6 +540,7 @@ void Client::pollEvents()
     std::lock_guard<std::mutex> lock(launchMutex);
     pendingLaunch = r;
     haveLaunch = true;
+    return 1;
 }
 
 bool Client::Ask(uint32_t id, const std::string& text)
@@ -736,10 +738,9 @@ void Client::worker(std::string host)
             // being uploaded - the game would otherwise freeze for that time)
             if (t - lastPing >= 250)
             {
-                uint16_t st;
-                int r = TryRequest(LINK_CMD_PING, nullptr, 0, st);
+                // asking for events is the keep-alive at the same time (no extra ping)
+                int r = pollEvents();
                 if (r == 0) break;
-                if (r == 1) pollEvents();
                 lastPing = t;
             }
             {
@@ -847,8 +848,11 @@ void Client::videoWorker()
         else if (!lastFrame.empty())
         {
             // nothing new (e.g. emulation paused): still repair lost tiles and
-            // replace half-resolution previews with the exact picture
-            sendTiles(lastFrame);
+            // replace half-resolution previews with the exact picture - but once
+            // all is exact, stop (no endless refreshing of a still picture)
+            bool pending = !inFlight.empty();
+            for (uint8_t l : tileLevel) if (l != 0) { pending = true; break; }
+            if (pending) sendTiles(lastFrame);
         }
     }
 }

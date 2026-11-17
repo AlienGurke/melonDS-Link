@@ -134,9 +134,12 @@ erscheint als weitere Sprache) und `sd:/3ds/melonDS-Link/Language/*.txt` (3DS).
   Zuklappen noch, bevor er schläft; nach dem Aufklappen verbindet er sich neu und das Spiel
   geht weiter. Aus = der 3DS schläft beim Zuklappen nicht, die Bildschirme gehen aus und das
   Spiel läuft weiter.
-- *3DS-Akku und WLAN alle 10 Minuten kurz einblenden* (Standard: aus) – nur kurz, damit nichts
-  dauerhaft auf einem OLED steht. Den aktuellen Stand zeigt auch das Menü 3DS Link selbst.
-- Warnungen bei 30 %, 20 % und 10 % Akku kommen immer (am PC und auf dem 3DS).
+- *3DS-Akku und WLAN anzeigen* (oben rechts in melonDS): aus, immer, immer und leicht
+  wandernd (schont OLED-Bildschirme) oder alle 5/10/20/30/60 Minuten für ein paar Sekunden.
+  Den aktuellen Stand zeigt auch das Menü 3DS Link selbst.
+- Hinweise bei 30 %, 20 % und 10 % Akku kommen immer (am PC und auf dem 3DS).
+
+Auf dem 3DS zeigt *Akku/WLAN oben anzeigen* (Menü, Standard: an) beides oben rechts an.
 
 **Debug:** WLAN-Test, SD-Karten-Test und das Log (`melonDS-Link/Debug/link-log.txt`)
 sind unter **3DS Link → Debug**.

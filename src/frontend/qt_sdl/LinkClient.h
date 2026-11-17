@@ -185,7 +185,7 @@ private:
     std::mutex launchMutex;
     bool haveLaunch = false;
     LaunchRequest pendingLaunch;
-    void pollEvents();
+    int pollEvents();   // 1 = asked (event or not), 0 = transport error, -1 = busy
 
     std::mutex eventMutex;
     bool haveAnswer = false;
