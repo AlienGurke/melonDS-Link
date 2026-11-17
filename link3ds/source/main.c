@@ -406,6 +406,7 @@ static volatile bool g_keepAwake = false;        /* melonDS: closing the 3DS kee
 static volatile u32 g_sockGen = 0;               /* bumped after waking up: sockets are made anew */
 static volatile bool g_netPause = false;         /* the socket service is being restarted: hands off */
 static volatile bool g_wokeUp = false;           /* woke up, not yet connected to melonDS again */
+static volatile u64 g_wakeTime = 0;
 /* save backups on the PC, listed on the 3DS (guarded by g_lock) */
 #define BAK_MAX 14
 static volatile bool g_bakOpen = false, g_bakWaiting = false;
@@ -2200,6 +2201,7 @@ static void aptHookFunc(APT_HookType hook, void* param)
         /* the WiFi needs a few seconds to come back; the main loop then makes
            the sockets anew (and restarts the socket service if needed) */
         g_lidClosed = false;
+        g_wakeTime = osGetTime();
         g_wokeUp = true;
         g_sockGen++;
     }
@@ -2273,6 +2275,19 @@ static void readConsoleState(bool battery)
     }
     u8 w = osGetWifiStrength();
     g_wifi = w <= 3 ? w : 255;
+}
+
+/* connected to the WiFi access point (ac service, opened only for asking) */
+static bool wifiConnected(void)
+{
+    u32 st = 0;
+    if (R_SUCCEEDED(acInit()))
+    {
+        Result r = ACU_GetWifiStatus(&st);
+        acExit();
+        if (R_SUCCEEDED(r)) return st != 0;
+    }
+    return osGetWifiStrength() > 0;
 }
 
 static bool readLidClosed(void)
@@ -2354,7 +2369,7 @@ int main(int argc, char** argv)
     bool lastZoom = !g_zoom, lastHaveVideo = true;
     bool savedZoom = g_zoom;
     int menuCursor = 0, menuTop = 0, linkCursor = 0;
-    u64 lastStateRead = 0, lastBatteryRead = 0, lastWakeTry = 0;
+    u64 lastStateRead = 0, lastBatteryRead = 0, lastWakeTry = 0, lastWakeCheck = 0, wifiSince = 0, firstWifi = 0;
     int wakeTries = 0;
     bool sleepApplied = false, keepAwakeApplied = false, wasLidDark = false;
     bool isNew3DS = false;
@@ -2451,24 +2466,36 @@ int main(int argc, char** argv)
             mk = 0;
         }
         /* whenever something is shown, the top screen has to be on */
-        /* after waking up: once the WiFi is back, make the sockets anew; if
-           melonDS still cannot connect, restart the whole socket service */
+        /* after waking up: as soon as the WiFi is connected again, restart the
+           socket service and make the sockets anew (the sleep breaks them).
+           If melonDS still does not get through, again every 4 seconds. */
         if (g_wokeUp)
         {
             u64 now = osGetTime();
-            if (g_tcpConnected) { g_wokeUp = false; wakeTries = 0; }
-            else if (now - lastWakeTry >= (wakeTries < 6 ? 5000u : 15000u) && wakeTries < 20)
+            if (g_tcpConnected)
             {
-                u32 newIp = (u32)gethostid();
-                if (osGetWifiStrength() > 0 && newIp != 0 && newIp != 0xFFFFFFFFu)
+                /* how long it took (grey line on the top screen), to see whether
+                   the WiFi or the reconnecting is the slow part */
+                LightLock_Lock(&g_lock);
+                snprintf(g_xferInfo2, sizeof(g_xferInfo2), "WiFi %.1f s, melonDS %.1f s",
+                         firstWifi ? (firstWifi - g_wakeTime) / 1000.0 : 0.0, (now - g_wakeTime) / 1000.0);
+                LightLock_Unlock(&g_lock);
+                g_wokeUp = false; wakeTries = 0; wifiSince = 0; firstWifi = 0;
+            }
+            else if (now - lastWakeCheck >= 250)
+            {
+                lastWakeCheck = now;
+                if (!wifiConnected()) wifiSince = 0;
+                else
                 {
-                    lastWakeTry = now;
-                    wakeTries++;
-                    if (wakeTries >= 2)
+                    if (!wifiSince) wifiSince = now;
+                    if (!firstWifi) firstWifi = now;
+                    if (now - wifiSince >= 300 && (wakeTries == 0 || now - lastWakeTry >= 4000) && wakeTries < 40)
                     {
-                        /* plain new sockets did not help: restart the service */
+                        lastWakeTry = now;
+                        wakeTries++;
                         g_netPause = true;
-                        svcSleepThread(100000000LL);   /* the threads step back */
+                        svcSleepThread(60000000LL);   /* the threads step back */
                         /* close the old sockets here (not in the threads): after the
                            restart a new socket may get the same number again */
                         close(g_listenFd); g_listenFd = -1;
@@ -2477,10 +2504,10 @@ int main(int argc, char** argv)
                         socExit();
                         socInit(socBuf, SOC_BUFFERSIZE);
                         g_netPause = false;
-                        newIp = (u32)gethostid();
+                        g_sockGen++;
+                        u32 newIp = (u32)gethostid();
+                        if (newIp != 0 && newIp != 0xFFFFFFFFu) ip.s_addr = newIp;
                     }
-                    g_sockGen++;
-                    if (newIp != 0 && newIp != 0xFFFFFFFFu) ip.s_addr = newIp;
                 }
             }
         }
