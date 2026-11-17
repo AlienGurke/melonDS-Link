@@ -53,7 +53,7 @@ bool writeWholeFile(const QString& path, const uint8_t* data, size_t len)
 
 std::string hashOf(const uint8_t* data, size_t len)
 {
-    return QCryptographicHash::hash(QByteArrayView((const char*)data, (qsizetype)len),
+    return QCryptographicHash::hash(QByteArray::fromRawData((const char*)data, (qsizetype)len),
                                     QCryptographicHash::Sha1).toHex().toStdString();
 }
 
