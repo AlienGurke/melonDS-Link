@@ -1,8 +1,9 @@
 /*
-    melonDS Link protocol
-    Shared between the melonDS frontend (PC) and the 3DS-Link homebrew (3DS).
-    The 3DS app lives in github.com/AlienGurke/3DS-Link (include/LinkProto.h);
-    keep both copies identical.
+    3DS Link protocol (started as "melonDS Link")
+    Shared between the 3DS-Link homebrew (3DS) and the emulators on the PC
+    (melonDS-Link, Azahar-Link). The 3DS app lives in
+    github.com/AlienGurke/3DS-Link (include/LinkProto.h); every copy must be
+    identical (the emulator builds check this).
 
     Plain C so both sides can include it. Everything is little-endian,
     which both x86/ARM64 PCs and the 3DS are.
@@ -14,7 +15,7 @@
       - UDP (LINK_UDP_PORT on the 3DS): input stream 3DS -> PC.
         The PC sends one LINK_UDP_HELLO datagram from the socket it wants
         to receive on; the 3DS then streams LinkInputPacket to that address.
-      - UDP (LINK_VIDEO_PORT on the 3DS): DS bottom screen PC -> 3DS as
+      - UDP (LINK_VIDEO_PORT on the 3DS): bottom screen PC -> 3DS as
         changed 8x8 tiles (RGB565). Lost tiles heal through a rolling refresh.
 */
 
@@ -24,7 +25,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        14u
+#define LINK_VERSION        15u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -36,7 +37,7 @@
 /* TCP commands */
 enum LinkCommand
 {
-    LINK_CMD_HELLO      = 1, /* in: u32 version            out: LinkHelloResp      */
+    LINK_CMD_HELLO      = 1, /* in: u32 version [+ u32 LINK_CLIENT_*]  out: LinkHelloResp */
     LINK_CMD_PING       = 2, /* in: -                      out: -                  */
     LINK_CMD_STAT       = 3, /* in: path                   out: LinkStatResp       */
     LINK_CMD_READ       = 4, /* in: LinkReadReq + path     out: data               */
@@ -84,6 +85,11 @@ enum LinkCommand
                                 (newest first). Answer to LINK_EVENT_BACKUPS. */
     LINK_CMD_OPTIONS    = 23,/* in: u32 LINK_OPT_* (settings made in melonDS)  out: - */
 };
+
+/* which emulator is on the PC side (second u32 of LINK_CMD_HELLO, missing = melonDS).
+   It decides the picture size and which menus the 3DS app offers. */
+#define LINK_CLIENT_MELONDS 0u
+#define LINK_CLIENT_AZAHAR  1u
 
 #define LINK_OPT_KEEP_AWAKE 1u     /* closing the 3DS does not put it to sleep (game keeps running) */
 
@@ -277,8 +283,10 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_INPUT_ZOOM     2u     /* 3DS shows the DS screen enlarged */
 #define LINK_INPUT_VIDEOACK 4u     /* videoAckSeq/Mask valid */
 
-/* Video: the DS bottom screen is split into 32x24 tiles of 8x8 RGB565 pixels.
-   Each entry starts with a u16: bits 0-9 tile index, bits 13-15 tile type.
+/* Video: the bottom screen is split into tiles of 8x8 RGB565 pixels:
+   melonDS sends the DS screen (256x192 = 32x24 tiles), Azahar the 3DS bottom
+   screen (320x240 = 40x30 tiles, shown 1:1). Tiles are numbered row by row.
+   Each entry starts with a u16: bits 0-10 tile index, bits 13-15 tile type.
      RAW    : 64 u16 pixels, row-major                         (128 bytes)
      SOLID  : 1 u16 colour                                     (2 bytes)
      PAL2   : 2 u16 colours + 8 bytes, 1 bit/pixel, row y = byte y,
@@ -297,7 +305,7 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
    baseSeq: all packets before it were confirmed, or were lost and their tiles
    are repeated in this frame. So once every packet from baseSeq to the end of
    this frame has arrived, the 3DS has a consistent picture and may show it. */
-#define LINK_TILE_INDEX_MASK 0x03FFu
+#define LINK_TILE_INDEX_MASK 0x07FFu
 #define LINK_TILE_TYPE_SHIFT 13
 #define LINK_TILE_RAW       0u
 #define LINK_TILE_SOLID_T   1u
@@ -313,6 +321,9 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_TILES_X        32
 #define LINK_TILES_Y        24
 #define LINK_TILE_COUNT     (LINK_TILES_X * LINK_TILES_Y)
+#define LINK_3DS_TILES_X    40      /* Azahar: the 3DS bottom screen */
+#define LINK_3DS_TILES_Y    30
+#define LINK_MAX_TILES      (LINK_3DS_TILES_X * LINK_3DS_TILES_Y)
 #define LINK_FRAME_MAX_BYTES 1400
 
 typedef struct LINK_PACKED LinkFramePacket
