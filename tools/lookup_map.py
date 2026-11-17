@@ -24,6 +24,16 @@ def main():
         syms.append((addr, line.rstrip()))
         if base is None or addr < base:
             base = addr
+    if not syms:
+        # MSVC link.exe map: " 0001:00361234  ?name@@...  0000000140362234 f  lib:object.obj"
+        for line in open(path, errors="replace"):
+            m = re.match(r"\s*[0-9a-fA-F]{4}:[0-9a-fA-F]{8}\s+(\S+)\s+([0-9a-fA-F]{16})\s+(.*)$", line)
+            if m:
+                addr = int(m.group(2), 16)
+                if addr:
+                    syms.append((addr, m.group(1) + "   " + m.group(3).strip()))
+        if syms:
+            base = 0x140000000
     syms.sort()
     if not syms:
         print("no symbols parsed"); return

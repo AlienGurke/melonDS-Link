@@ -23,6 +23,4 @@ jobs:
         github-token: ${{ github.token }}
         path: map
     - run: |
-        head -c 3000 map/melonDS.map
-        echo; echo ----
         python3 tools/lookup_map.py map/melonDS.map ${{ inputs.offsets }}
