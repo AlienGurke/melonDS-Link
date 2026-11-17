@@ -71,7 +71,7 @@ public:
     // bgra=true: bytes B,G,R,A (software renderer), false: R,G,B,A (OpenGL).
     // Cheap: converts and hands the frame to the sender thread.
     void SubmitBottomScreen(const uint32_t* pixels, bool bgra);
-    bool WantsVideo() const { return state.load() == State::Connected; }
+    bool WantsVideo() const { return state.load() == State::Connected && videoWanted.load(); }
 
     // messages for the on-screen display (connected, lost, ...)
     bool PopMessage(std::string& msg);
@@ -131,6 +131,9 @@ public:
 
     // the user asked for a screenshot on the 3DS (cleared by reading)
     bool TakeScreenshotRequest() { return screenshotWanted.exchange(false); }
+    // the user wants the game ended / is back in the game (3DS menu)
+    bool TakeStopRequest() { return stopWanted.exchange(false); }
+    bool TakeResumeRequest() { return resumeWanted.exchange(false); }
 
     // show a message in melonDS (thread-safe)
     void PostMessage(const std::string& msg) { pushMessage(msg); }
@@ -170,6 +173,9 @@ private:
     uint32_t answerId = 0;
     int answerChoice = 0;
     std::atomic<bool> screenshotWanted { false };
+    std::atomic<bool> stopWanted { false };
+    std::atomic<bool> resumeWanted { false };
+    std::atomic<bool> videoWanted { true };   // bottom screen picture on (3DS setting)
     std::string remoteLang = "en";
 
     // video: latest frame waiting to be sent + what the 3DS should have

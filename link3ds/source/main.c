@@ -84,7 +84,11 @@ enum StrId
     S_HINT_MENU, S_HINT_CSTICK, S_HINT_CONNECT, S_MENU_TITLE, S_M_GAMES, S_M_DISPLAY, S_M_TOPOFF,
     S_M_SHOT, S_M_LANG, S_M_BACK, S_M_QUIT, S_MENU_HINT, S_STARTING, S_SHOT_REQ, S_NOT_CONNECTED,
     S_WIFI_FAIL, S_WIFI_FAIL2, S_ASK_HINT, S_PC_COPIED, S_XFER_WIFI, S_XFER_DATA, S_XFER_WAIT,
-    S_LANGNAME, S_COUNT
+    S_LANGNAME,
+    S_M_BOTTOM, S_ON, S_OFF, S_M_STOP, S_D_RESUME_T, S_D_CONTINUE, S_D_LIST, S_D_LOST, S_D_START,
+    S_D_BACK, S_D_STOP_T, S_D_STOP_A, S_D_QUIT_T, S_D_QUIT_1, S_D_SAVING, S_D_QUIT_A, S_STOPPING,
+    S_D_SWITCH_T,
+    S_COUNT
 };
 
 static const char* const g_strs[LANG_COUNT][S_COUNT] = {
@@ -92,24 +96,36 @@ static const char* const g_strs[LANG_COUNT][S_COUNT] = {
         "melonDS Link", "IP address:", "connected", "waiting...", "Controls:", "active", "Picture:",
         "Display:", "Enlarged", "Original (1:1)", "Pick a game", "No .nds files found.",
         "A start  X favorite  Y reload", "A start  X favorite  Y reload  B back", "Running:",
-        "SELECT+START: menu (hold: quit)", "C-stick: down = games, up = display",
+        "SELECT+START: menu   L+R+SELECT+START hold: quit", "C-stick: down = games, up = display",
         "In melonDS: 3DS Link > Connect to 3DS", "melonDS Link menu", "Game list", "Display",
-        "Turn top screen off", "Screenshot (saved on the PC)", "Language", "Back to the game", "Quit",
+        "Turn top screen off", "Screenshot (saved on the PC)", "Language", "Back to the game", "Quit the app",
         "A select   B close", "Starting game - waiting for melonDS...", "Screenshot requested",
         "melonDS is not connected", "WiFi could not be started.", "Is WiFi on? START to quit.",
         "A / B to choose", "PC = copied to the PC", "WiFi", "data", "Waiting:", "English",
+        "Bottom screen picture", "on", "off (touch still works)", "End the game on the PC",
+        "Still running in melonDS:", "Continue playing", "Game list",
+        "Progress since the last in-game save will be lost.", "Start", "Back",
+        "End the game in melonDS?", "End the game", "Quit melonDS Link?",
+        "melonDS pauses the game until you connect again.", "A save is being written right now!",
+        "Quit", "Ending the game...", "Start another game?",
     },
     {   /* Deutsch */
         "melonDS Link", "IP-Adresse:", "verbunden", "wartet...", "Steuerung:", "aktiv", "Bild:",
         "Anzeige:", "Vergrößert", "Original (1:1)", "Spiel wählen", "Keine .nds-Dateien gefunden.",
         "A Start  X Favorit  Y neu laden", "A Start  X Favorit  Y neu laden  B zurück", "Läuft:",
-        "SELECT+START: Menü (halten: beenden)", "C-Stick: runter = Spiele, hoch = Anzeige",
+        "SELECT+START: Menü   L+R+SELECT+START halten: Ende", "C-Stick: runter = Spiele, hoch = Anzeige",
         "In melonDS: 3DS Link > Mit 3DS verbinden", "melonDS-Link-Menü", "Spieleliste", "Anzeige",
         "Oberen Bildschirm ausschalten", "Screenshot (wird am PC gespeichert)", "Sprache",
-        "Zurück zum Spiel", "Beenden", "A auswählen   B schließen",
+        "Zurück zum Spiel", "App beenden", "A auswählen   B schließen",
         "Starte Spiel - warte auf melonDS...", "Screenshot angefordert", "melonDS ist nicht verbunden",
         "WLAN konnte nicht gestartet werden.", "Ist WLAN an? START zum Beenden.", "Mit A / B wählen",
         "PC = schon auf dem PC", "WLAN", "Daten", "Wartet:", "Deutsch",
+        "Bild unten", "an", "aus (Touch geht weiter)", "Spiel am PC beenden",
+        "In melonDS läuft noch:", "Weiterspielen", "Spieleliste",
+        "Fortschritt seit dem letzten Speichern im Spiel geht verloren.", "Starten", "Zurück",
+        "Spiel in melonDS beenden?", "Spiel beenden", "melonDS Link beenden?",
+        "melonDS pausiert das Spiel, bis du wieder verbindest.", "Gerade wird ein Spielstand geschrieben!",
+        "Beenden", "Spiel wird beendet...", "Ein anderes Spiel starten?",
     },
 };
 static char g_tr[S_COUNT][80];   /* current language, already in code page 437 */
@@ -123,7 +139,11 @@ static const char* const g_strKeys[S_COUNT] = {
     "menu_shot", "menu_lang", "menu_back", "menu_quit", "menu_hint", "starting", "shot_requested", "not_connected",
     "wifi_fail", "wifi_fail2", "ask_hint", "pc_copied", "xfer_wifi", "xfer_data", "xfer_wait",
     "language_name",
+    "menu_bottom", "on", "off", "menu_stop", "resume_title", "continue", "game_list", "progress_lost", "start",
+    "back", "stop_title", "stop_confirm", "quit_title", "quit_note", "saving_now", "quit_confirm", "stopping",
+    "switch_title",
 };
+#define LANG_FILE_VERSION 2   /* files of an older version are written anew */
 static char g_custom[LANG_COUNT][S_COUNT][80];   /* from the files ("" = built-in) */
 #define LANG_DIR "sdmc:/3ds/melonDS-Link/Language"
 
@@ -136,7 +156,7 @@ static void loadLanguageFiles(void)
     {
         char path[96];
         snprintf(path, sizeof(path), LANG_DIR "/%s.txt", g_langCodes[l]);
-        int found = 0;
+        int found = 0, version = 0;
         FILE* f = fopen(path, "r");
         if (f)
         {
@@ -147,6 +167,7 @@ static void loadLanguageFiles(void)
                 char* eq = strchr(line, '=');
                 if (line[0] == '#' || !eq) continue;
                 *eq = 0;
+                if (strcmp(line, "version") == 0) { version = atoi(eq + 1); continue; }
                 for (int i = 0; i < S_COUNT; i++)
                     if (strcmp(line, g_strKeys[i]) == 0)
                     {
@@ -157,11 +178,18 @@ static void loadLanguageFiles(void)
             }
             fclose(f);
         }
+        if (version != LANG_FILE_VERSION)
+        {
+            /* texts of an older app version: start from the current ones */
+            memset(g_custom[l], 0, sizeof(g_custom[l]));
+            found = 0;
+        }
         if (found >= S_COUNT) continue;
         /* new or incomplete (a newer app version): write all keys, keep the user's texts */
         f = fopen(path, "w");
         if (!f) continue;
         fprintf(f, "# melonDS Link (3DS) - key=text, UTF-8. Restart the app after editing.\n");
+        fprintf(f, "version=%d\n", LANG_FILE_VERSION);
         for (int i = 0; i < S_COUNT; i++)
             fprintf(f, "%s=%s\n", g_strKeys[i], g_custom[l][i][0] ? g_custom[l][i] : g_strs[l][i]);
         fclose(f);
@@ -336,6 +364,18 @@ static int g_gameCount = 0;
 static volatile bool g_menuOpen = true;      /* game list shown, input not sent to the game */
 static volatile bool g_gameStarted = false;
 static char g_currentGame[128] = "";
+/* dialogs of the 3DS app itself (A / B), shown like the questions from melonDS */
+enum { LA_NONE, LA_RESUME, LA_SWITCH, LA_STOP, LA_QUIT };
+static volatile int g_localAsk = LA_NONE;
+static int g_switchIdx = 0;                      /* LA_SWITCH: the game to start */
+static volatile bool g_launchPending = false;    /* picked a game, melonDS has not answered yet */
+static volatile bool g_sessionNew = false;       /* melonDS runs a game we did not know about */
+static volatile bool g_sessionSame = false;      /* melonDS confirmed the game we play */
+static volatile bool g_sessionEnded = false;     /* melonDS runs no game any more */
+static volatile bool g_videoOff = false;         /* bottom screen picture off (setting) */
+static volatile bool g_haveStopEv = false, g_haveResumeEv = false, g_haveVideoEv = false;
+static volatile bool g_saveWriting = false;      /* a save is between WRITE and REPLACE */
+static volatile u64 g_saveWriteTime = 0;
 
 /* pending launch for melonDS (guarded by g_lock) */
 static bool g_haveEvent = false;
@@ -498,6 +538,7 @@ static void requestLaunch(int idx)
     LightLock_Unlock(&g_lock);
 
     g_gameStarted = true;
+    g_launchPending = true;
     g_menuOpen = false;
 }
 
@@ -812,6 +853,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         r.isNew3DS = isNew ? 1 : 0;
         snprintf(r.name, sizeof(r.name), "%s", isNew ? "New 3DS" : "3DS");
         snprintf(r.lang, sizeof(r.lang), "%s", g_langCodes[g_lang]);
+        r.flags = g_videoOff ? LINK_HELLO_VIDEO_OFF : 0;
         uint32_t ver = (h->len >= 4) ? *(uint32_t*)payload : 0;
         return sendResponse(fd, h, ver == LINK_VERSION ? LINK_OK : LINK_ERR_VERSION, &r, sizeof(r));
     }
@@ -874,6 +916,11 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             return sendResponse(fd, h, LINK_ERR_DENIED, NULL, 0);
         const uint8_t* data = payload + sizeof(req) + req.pathLen;
         size_t dataLen = h->len - sizeof(req) - req.pathLen;
+        {
+            /* melonDS writes saves into "<save>.tmp" and then swaps it in */
+            size_t pl = strlen(path);
+            if (pl > 4 && strcmp(path + pl - 4, ".tmp") == 0) { g_saveWriting = true; g_saveWriteTime = osGetTime(); }
+        }
         /* the data sits right behind the path, at an odd address: the 3DS file
            system writes such buffers very slowly (512 KB took 10-18 s, the same
            from an aligned buffer ~0.2 s). Copy it to an aligned buffer first. */
@@ -965,10 +1012,11 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             used += g_event.savePathLen;
             g_haveEvent = false;
         }
-        else if (g_haveAnswer || g_haveShot || g_haveLangEvent)
+        else if (g_haveAnswer || g_haveShot || g_haveLangEvent || g_haveStopEv || g_haveResumeEv || g_haveVideoEv)
         {
             LinkEvent ev;
             memset(&ev, 0, sizeof(ev));
+            const char* text = NULL;
             if (g_haveAnswer)
             {
                 ev.type = LINK_EVENT_ANSWER;
@@ -976,22 +1024,27 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
                 ev.reserved = g_answerChoice;
                 g_haveAnswer = false;
             }
-            else if (g_haveShot)
+            else if (g_haveStopEv) { ev.type = LINK_EVENT_STOPGAME; g_haveStopEv = false; }
+            else if (g_haveShot) { ev.type = LINK_EVENT_SCREENSHOT; g_haveShot = false; }
+            else if (g_haveVideoEv)
             {
-                ev.type = LINK_EVENT_SCREENSHOT;
-                g_haveShot = false;
+                ev.type = LINK_EVENT_VIDEO;
+                ev.reserved = g_videoOff ? 0 : 1;
+                g_haveVideoEv = false;
             }
+            else if (g_haveResumeEv) { ev.type = LINK_EVENT_RESUME; g_haveResumeEv = false; }
             else
             {
                 ev.type = LINK_EVENT_LANGUAGE;
-                ev.romPathLen = (uint16_t)strlen(g_langCodes[g_lang]);
+                text = g_langCodes[g_lang];
+                ev.romPathLen = (uint16_t)strlen(text);
                 g_haveLangEvent = false;
             }
             memcpy(g_outbuf, &ev, sizeof(ev));
             used = sizeof(ev);
-            if (ev.type == LINK_EVENT_LANGUAGE)
+            if (text)
             {
-                memcpy(g_outbuf + used, g_langCodes[g_lang], ev.romPathLen);
+                memcpy(g_outbuf + used, text, ev.romPathLen);
                 used += ev.romPathLen;
             }
             have = true;
@@ -1050,6 +1103,35 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         utf8ToCp437(g_askB, sizeof(g_askB), lines[count - 1]);
         g_askId = id;
         g_askActive = true;
+        LightLock_Unlock(&g_lock);
+        return sendResponse(fd, h, LINK_OK, NULL, 0);
+    }
+
+    case LINK_CMD_SESSION:
+    {
+        if (h->len < 1) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
+        u8 flags = payload[0];
+        char name[128];
+        size_t n = h->len - 1 < sizeof(name) - 1 ? h->len - 1 : sizeof(name) - 1;
+        memcpy(name, payload + 1, n);
+        name[n] = 0;
+        LightLock_Lock(&g_lock);
+        if (flags & LINK_SESSION_LAUNCH_DONE) g_launchPending = false;
+        if (name[0])
+        {
+            bool same = g_gameStarted && strcmp(g_currentGame, name) == 0;
+            g_launchPending = false;
+            snprintf(g_currentGame, sizeof(g_currentGame), "%s", name);
+            if (same) g_sessionSame = true;
+            else { g_gameStarted = true; g_sessionNew = true; }
+        }
+        else if (g_gameStarted && !g_launchPending)
+        {
+            /* the game in melonDS was ended */
+            g_gameStarted = false;
+            g_currentGame[0] = 0;
+            g_sessionEnded = true;
+        }
         LightLock_Unlock(&g_lock);
         return sendResponse(fd, h, LINK_OK, NULL, 0);
     }
@@ -1299,6 +1381,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             if (rename(to, bak) != 0) return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
         }
         else mkdirParents(to);
+        g_saveWriting = false;
         if (rename(from, to) != 0)
         {
             if (hadOld) rename(bak, to);   /* put the old one back */
@@ -1649,7 +1732,7 @@ static void inputThread(void* arg)
     u64 lastHello = 0;
     u32 packetId = 0;
     int quitHold = 0;
-    bool comboSeen = false;
+    bool comboSeen = false, quitSeen = false;
     bool cstickUpWas = false;
     u32 prevHeld = 0;
     int heloCheck = 0;
@@ -1661,14 +1744,18 @@ static void inputThread(void* arg)
         hidScanInput();
         u32 held = hidKeysHeld();
 
-        /* SELECT + START: tap = melonDS Link menu, hold ~1 s = quit */
+        /* SELECT + START: melonDS Link menu (on release).
+           L + R + SELECT + START held ~1 s: quit - hard to do by accident */
         bool combo = (held & KEY_SELECT) && (held & KEY_START);
-        if (combo) { quitHold++; comboSeen = true; }
-        else if (!(held & (KEY_SELECT | KEY_START)))
+        bool quitCombo = combo && (held & KEY_L) && (held & KEY_R);
+        if (combo) comboSeen = true;
+        if (quitCombo) { quitHold++; quitSeen = true; }
+        else quitHold = 0;
+        if (!(held & (KEY_SELECT | KEY_START)))
         {
-            if (comboSeen && quitHold <= 250) g_menuToggle = true;
+            if (comboSeen && !quitSeen) g_menuToggle = true;
             comboSeen = false;
-            quitHold = 0;
+            quitSeen = false;
         }
 
         /* C-stick up toggles zoom */
@@ -1679,8 +1766,9 @@ static void inputThread(void* arg)
         /* C-stick down opens/closes the game list */
         u32 down = held & ~prevHeld;
         prevHeld = held;
-        bool capture = g_menuOpen || g_linkMenuOpen || g_askActive;
-        if ((down & KEY_CSTICK_DOWN) && !g_askActive)
+        bool dialog = g_askActive || g_localAsk != LA_NONE;
+        bool capture = g_menuOpen || g_linkMenuOpen || dialog;
+        if ((down & KEY_CSTICK_DOWN) && !dialog)
         {
             if (!g_menuOpen) { g_menuOpen = true; g_linkMenuOpen = false; }
             else if (g_gameStarted) g_menuOpen = false;
@@ -1693,7 +1781,7 @@ static void inputThread(void* arg)
         }
         /* while a list, the menu or a question is shown, the game gets no input */
         u32 gameKeys = capture ? 0 : held;
-        if (combo) gameKeys &= ~(KEY_SELECT | KEY_START);
+        if (combo) gameKeys &= ~(KEY_SELECT | KEY_START | (quitCombo ? (KEY_L | KEY_R) : 0));
 
         /* HELO from the PC (keep-alive, once a second): checking every 50 ms
            is plenty and keeps the socket service free for the transfers */
@@ -1865,6 +1953,15 @@ static void setLine(int row, const char* fmt, ...)
 
 #define CONFIG_PATH "sdmc:/3ds/melonDS-Link.cfg"
 
+static bool g_bottomDark = false;
+static void setBottomBacklight(bool on)
+{
+    if (on == !g_bottomDark) return;
+    if (on) GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
+    else GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM);
+    g_bottomDark = !on;
+}
+
 static void setTopBacklight(bool on)
 {
     if (on == !g_topOff) return;
@@ -1883,6 +1980,7 @@ static void loadConfig(void)
         int v;
         char dir[128];
         if (sscanf(line, "zoom=%d", &v) == 1) g_zoom = v != 0;
+        else if (sscanf(line, "videooff=%d", &v) == 1) g_videoOff = v != 0;
         else if (sscanf(line, "lang=%d", &v) == 1) g_lang = v;
         else if (strncmp(line, "last=", 5) == 0)
         {
@@ -1904,6 +2002,7 @@ static void saveConfig(void)
     FILE* f = fopen(CONFIG_PATH, "w");
     if (!f) return;
     fprintf(f, "zoom=%d\n", g_zoom ? 1 : 0);
+    fprintf(f, "videooff=%d\n", g_videoOff ? 1 : 0);
     fprintf(f, "lang=%d\n", g_lang);
     fprintf(f, "romdir=%s\n", g_romDir);
     if (g_lastGame[0]) fprintf(f, "last=%s\n", g_lastGame);
@@ -2025,7 +2124,8 @@ int main(int argc, char** argv)
         lastVideoFrames = g_videoFrames;
         lastZoom = zoom;
         lastHaveVideo = haveVideo;
-        if (redrawBoth > 0)
+        if (g_videoOff) redrawBoth = 2;   /* screen is dark; draw again once it is back on */
+        else if (redrawBoth > 0)
         {
             drawBottom(haveVideo, zoom, (in.keys & KEY_TOUCH) != 0, in.touch.px, in.touch.py);
             redrawBoth--;
@@ -2038,12 +2138,43 @@ int main(int argc, char** argv)
         g_menuKeys = 0;
         LightLock_Unlock(&g_lock);
 
+        /* news from melonDS about the running game */
+        if (g_sessionNew)
+        {
+            /* e.g. the app was restarted while melonDS kept the game */
+            g_sessionNew = false;
+            if (g_menuOpen && !g_askActive) { g_localAsk = LA_RESUME; }
+        }
+        if (g_sessionSame)
+        {
+            /* reconnected while playing: melonDS may continue (it pauses when the 3DS goes away) */
+            g_sessionSame = false;
+            if (!g_menuOpen && !g_linkMenuOpen && g_localAsk == LA_NONE) g_haveResumeEv = true;
+        }
+        if (g_sessionEnded)
+        {
+            g_sessionEnded = false;
+            if (g_localAsk == LA_RESUME || g_localAsk == LA_STOP || g_localAsk == LA_SWITCH) g_localAsk = LA_NONE;
+            if (!g_linkMenuOpen) g_menuOpen = true;
+        }
+        /* a save that never got swapped in (connection lost) does not block quitting forever */
+        if (g_saveWriting && osGetTime() - g_saveWriteTime > 15000) g_saveWriting = false;
+
+        if (in.quit && g_localAsk != LA_QUIT)
+        {
+            /* L+R+SELECT+START held: quit at once, unless a save is on its way */
+            if (!g_saveWriting) break;
+            g_localAsk = LA_QUIT;
+            g_linkMenuOpen = false;
+        }
+
         bool askActive = g_askActive;
+        int localAsk = askActive ? LA_NONE : g_localAsk;
         if (g_menuToggle)
         {
             /* SELECT + START tapped: open/close the melonDS Link menu */
             g_menuToggle = false;
-            if (!askActive)
+            if (!askActive && localAsk == LA_NONE)
             {
                 if (g_linkMenuOpen)
                 {
@@ -2060,9 +2191,28 @@ int main(int argc, char** argv)
             mk = 0;
         }
         /* whenever something is shown, the top screen has to be on */
-        if (g_topOff && (g_menuOpen || g_linkMenuOpen || askActive)) setTopBacklight(true);
+        if (g_topOff && (g_menuOpen || g_linkMenuOpen || askActive || localAsk != LA_NONE)) setTopBacklight(true);
+        setBottomBacklight(!g_videoOff);
 
-        enum { MI_GAMES, MI_DISPLAY, MI_TOPOFF, MI_SHOT, MI_LANG, MI_BACK, MI_QUIT, MI_COUNT };
+        /* the menu: only what makes sense right now */
+        enum { MI_BACK, MI_GAMES, MI_SHOT, MI_DISPLAY, MI_BOTTOM, MI_TOPOFF, MI_LANG, MI_STOP, MI_QUIT };
+        int items[12], itemCount = 0;
+        bool playing = g_gameStarted && !g_launchPending;
+        if (g_gameStarted) items[itemCount++] = MI_BACK;
+        items[itemCount++] = MI_GAMES;
+        if (playing && g_tcpConnected) items[itemCount++] = MI_SHOT;
+        items[itemCount++] = MI_DISPLAY;
+        items[itemCount++] = MI_BOTTOM;
+        items[itemCount++] = MI_TOPOFF;
+        items[itemCount++] = MI_LANG;
+        if (playing && g_tcpConnected) items[itemCount++] = MI_STOP;
+        items[itemCount++] = MI_QUIT;
+        if (linkCursor >= itemCount) linkCursor = itemCount - 1;
+        if (linkCursor < 0) linkCursor = 0;
+
+        /* back to the game if there is one, else to the game list */
+        #define CLOSE_MENU() do { g_linkMenuOpen = false; if (!g_gameStarted) g_menuOpen = true; } while (0)
+
         if (askActive && mk)
         {
             if (mk & (KEY_A | KEY_B))
@@ -2075,33 +2225,68 @@ int main(int argc, char** argv)
                 LightLock_Unlock(&g_lock);
             }
         }
+        else if (localAsk != LA_NONE && mk)
+        {
+            bool yes = (mk & KEY_A) != 0, no = (mk & KEY_B) != 0;
+            if (yes || no)
+            {
+                g_localAsk = LA_NONE;
+                switch (localAsk)
+                {
+                case LA_RESUME:
+                    if (yes) { g_menuOpen = false; g_haveResumeEv = true; }
+                    else g_menuOpen = true;
+                    break;
+                case LA_SWITCH:
+                    if (yes) { requestLaunch(g_switchIdx); saveConfig(); }
+                    break;
+                case LA_STOP:
+                    if (yes)
+                    {
+                        LightLock_Lock(&g_lock);
+                        g_haveStopEv = true;
+                        snprintf(g_statusText, sizeof(g_statusText), "%s", T(S_STOPPING));
+                        LightLock_Unlock(&g_lock);
+                        g_linkMenuOpen = false;
+                    }
+                    break;
+                case LA_QUIT:
+                    if (yes) g_running = false;
+                    break;
+                }
+            }
+        }
         else if (g_linkMenuOpen && mk)
         {
-            if (mk & (KEY_DUP | KEY_CPAD_UP)) linkCursor = (linkCursor + MI_COUNT - 1) % MI_COUNT;
-            if (mk & (KEY_DDOWN | KEY_CPAD_DOWN)) linkCursor = (linkCursor + 1) % MI_COUNT;
-            if (mk & KEY_B)
-            {
-                g_linkMenuOpen = false;
-                if (!g_gameStarted) g_menuOpen = true;
-            }
+            if (mk & (KEY_DUP | KEY_CPAD_UP)) linkCursor = (linkCursor + itemCount - 1) % itemCount;
+            if (mk & (KEY_DDOWN | KEY_CPAD_DOWN)) linkCursor = (linkCursor + 1) % itemCount;
+            if (mk & KEY_B) CLOSE_MENU();
             else if (mk & KEY_A)
             {
-                switch (linkCursor)
+                switch (items[linkCursor])
                 {
+                case MI_BACK:
+                    g_linkMenuOpen = false;
+                    g_menuOpen = false;
+                    g_haveResumeEv = true;
+                    break;
                 case MI_GAMES: g_linkMenuOpen = false; g_menuOpen = true; break;
                 case MI_DISPLAY: g_zoom = !g_zoom; break;
+                case MI_BOTTOM:
+                    g_videoOff = !g_videoOff;
+                    g_haveVideoEv = true;
+                    saveConfig();
+                    break;
                 case MI_TOPOFF:
-                    g_linkMenuOpen = false;
-                    if (!g_gameStarted) g_menuOpen = true;
-                    else setTopBacklight(false);
+                    CLOSE_MENU();
+                    if (g_gameStarted) setTopBacklight(false);
                     break;
                 case MI_SHOT:
                     LightLock_Lock(&g_lock);
-                    if (g_tcpConnected) { g_haveShot = true; snprintf(g_statusText, sizeof(g_statusText), "%s", T(S_SHOT_REQ)); }
-                    else snprintf(g_statusText, sizeof(g_statusText), "%s", T(S_NOT_CONNECTED));
+                    g_haveShot = true;
+                    snprintf(g_statusText, sizeof(g_statusText), "%s", T(S_SHOT_REQ));
                     LightLock_Unlock(&g_lock);
-                    g_linkMenuOpen = false;
-                    if (!g_gameStarted) g_menuOpen = true;
+                    CLOSE_MENU();
                     break;
                 case MI_LANG:
                     g_lang = (g_lang + 1) % LANG_COUNT;
@@ -2109,11 +2294,12 @@ int main(int argc, char** argv)
                     g_haveLangEvent = true;
                     saveConfig();
                     break;
-                case MI_BACK:
-                    g_linkMenuOpen = false;
-                    if (!g_gameStarted) g_menuOpen = true;
+                case MI_STOP: g_localAsk = LA_STOP; break;
+                case MI_QUIT:
+                    /* with a game running (or a save on its way) ask first */
+                    if (g_gameStarted || g_saveWriting) g_localAsk = LA_QUIT;
+                    else g_running = false;
                     break;
-                case MI_QUIT: g_running = false; break;
                 }
             }
         }
@@ -2136,10 +2322,29 @@ int main(int argc, char** argv)
             }
             if ((mk & KEY_A) && g_gameCount > 0)
             {
-                requestLaunch(menuCursor);
-                saveConfig();      /* remembers the last game */
+                char base[256];
+                snprintf(base, sizeof(base), "%s", g_games[menuCursor]);
+                size_t bl = strlen(base);
+                if (bl > 4) base[bl - 4] = 0;
+                if (g_gameStarted && strcmp(base, g_currentGame) == 0)
+                {
+                    /* the game that runs anyway: just go back to it, never restart it */
+                    g_menuOpen = false;
+                    g_haveResumeEv = true;
+                }
+                else if (g_gameStarted)
+                {
+                    /* another game while one runs: unsaved progress would be lost */
+                    g_switchIdx = menuCursor;
+                    g_localAsk = LA_SWITCH;
+                }
+                else
+                {
+                    requestLaunch(menuCursor);
+                    saveConfig();      /* remembers the last game */
+                }
             }
-            else if ((mk & KEY_B) && g_gameStarted) g_menuOpen = false;
+            else if ((mk & KEY_B) && g_gameStarted) { g_menuOpen = false; g_haveResumeEv = true; }
         }
 
         /* ---------------- top screen ---------------- */
@@ -2161,17 +2366,57 @@ int main(int argc, char** argv)
         setLine(8, "\x1b[33m%.49s", status);
         setLine(9, "\x1b[90m%.49s", xi2);
 
-        if (askActive)
+        if (askActive || localAsk != LA_NONE)
         {
-            /* a question from melonDS */
             char lines[ASK_LINES][52], a[48], b[48];
-            int count;
-            LightLock_Lock(&g_lock);
-            count = g_askLineCount;
-            memcpy(lines, g_askLines, sizeof(lines));
-            snprintf(a, sizeof(a), "%s", g_askA);
-            snprintf(b, sizeof(b), "%s", g_askB);
-            LightLock_Unlock(&g_lock);
+            int count = 0;
+            if (askActive)
+            {
+                /* a question from melonDS */
+                LightLock_Lock(&g_lock);
+                count = g_askLineCount;
+                memcpy(lines, g_askLines, sizeof(lines));
+                snprintf(a, sizeof(a), "%s", g_askA);
+                snprintf(b, sizeof(b), "%s", g_askB);
+                LightLock_Unlock(&g_lock);
+            }
+            else
+            {
+                char g[130], other[300];
+                utf8ToCp437(g, sizeof(g), game);
+                switch (localAsk)
+                {
+                case LA_RESUME:
+                    snprintf(lines[count++], 52, "%s", T(S_D_RESUME_T));
+                    snprintf(lines[count++], 52, "%.49s", g);
+                    snprintf(a, sizeof(a), "%s", T(S_D_CONTINUE));
+                    snprintf(b, sizeof(b), "%s", T(S_D_LIST));
+                    break;
+                case LA_SWITCH:
+                    utf8ToCp437(other, sizeof(other), g_switchIdx < g_gameCount ? g_games[g_switchIdx] : "");
+                    if (strlen(other) > 4) other[strlen(other) - 4] = 0;
+                    snprintf(lines[count++], 52, "%s", T(S_D_SWITCH_T));
+                    snprintf(lines[count++], 52, "%s %.40s", T(S_RUNNING), g);
+                    snprintf(lines[count++], 52, "%.49s", T(S_D_LOST));
+                    snprintf(a, sizeof(a), "%s: %.30s", T(S_D_START), other);
+                    snprintf(b, sizeof(b), "%s", T(S_D_BACK));
+                    break;
+                case LA_STOP:
+                    snprintf(lines[count++], 52, "%s", T(S_D_STOP_T));
+                    snprintf(lines[count++], 52, "%.49s", g);
+                    snprintf(lines[count++], 52, "%.49s", T(S_D_LOST));
+                    snprintf(a, sizeof(a), "%s", T(S_D_STOP_A));
+                    snprintf(b, sizeof(b), "%s", T(S_D_BACK));
+                    break;
+                default:
+                    snprintf(lines[count++], 52, "%s", T(S_D_QUIT_T));
+                    if (g_saveWriting) snprintf(lines[count++], 52, "\x1b[31m%.44s\x1b[0m", T(S_D_SAVING));
+                    if (g_gameStarted) snprintf(lines[count++], 52, "%.49s", T(S_D_QUIT_1));
+                    snprintf(a, sizeof(a), "%s", T(S_D_QUIT_A));
+                    snprintf(b, sizeof(b), "%s", T(S_D_BACK));
+                    break;
+                }
+            }
             for (int r = 0; r < 16; r++)
             {
                 int row = 10 + r;
@@ -2186,23 +2431,25 @@ int main(int argc, char** argv)
         {
             setLine(10, "\x1b[36m%s", T(S_MENU_TITLE));
             setLine(11, "");
-            for (int i = 0; i < MI_COUNT; i++)
+            for (int i = 0; i < itemCount; i++)
             {
                 char label[64];
-                switch (i)
+                switch (items[i])
                 {
-                case MI_GAMES: snprintf(label, sizeof(label), "%s", T(S_M_GAMES)); break;
-                case MI_DISPLAY: snprintf(label, sizeof(label), "%s: %s", T(S_M_DISPLAY), zoom ? T(S_ENLARGED) : T(S_ORIGINAL)); break;
-                case MI_TOPOFF: snprintf(label, sizeof(label), "%s", T(S_M_TOPOFF)); break;
-                case MI_SHOT: snprintf(label, sizeof(label), "%s", T(S_M_SHOT)); break;
-                case MI_LANG: snprintf(label, sizeof(label), "%s: %s", T(S_M_LANG), T(S_LANGNAME)); break;
                 case MI_BACK: snprintf(label, sizeof(label), "%s", T(S_M_BACK)); break;
+                case MI_GAMES: snprintf(label, sizeof(label), "%s", T(S_M_GAMES)); break;
+                case MI_SHOT: snprintf(label, sizeof(label), "%s", T(S_M_SHOT)); break;
+                case MI_DISPLAY: snprintf(label, sizeof(label), "%s: %s", T(S_M_DISPLAY), zoom ? T(S_ENLARGED) : T(S_ORIGINAL)); break;
+                case MI_BOTTOM: snprintf(label, sizeof(label), "%s: %s", T(S_M_BOTTOM), g_videoOff ? T(S_OFF) : T(S_ON)); break;
+                case MI_TOPOFF: snprintf(label, sizeof(label), "%s", T(S_M_TOPOFF)); break;
+                case MI_LANG: snprintf(label, sizeof(label), "%s: %s", T(S_M_LANG), T(S_LANGNAME)); break;
+                case MI_STOP: snprintf(label, sizeof(label), "%s", T(S_M_STOP)); break;
                 default: snprintf(label, sizeof(label), "%s", T(S_M_QUIT)); break;
                 }
                 if (i == linkCursor) setLine(12 + i, "\x1b[47;30m> %-46.46s", label);
                 else setLine(12 + i, "  %-46.46s", label);
             }
-            for (int r = 12 + MI_COUNT; r < 26; r++) setLine(r, "");
+            for (int r = 12 + itemCount; r < 26; r++) setLine(r, "");
             setLine(26, "\x1b[90m%s", T(S_MENU_HINT));
         }
         else if (g_menuOpen)
@@ -2275,6 +2522,7 @@ int main(int argc, char** argv)
     socExit();
     irrstExit();
     setTopBacklight(true);
+    setBottomBacklight(true);
     gspLcdExit();
     gfxExit();
     return 0;

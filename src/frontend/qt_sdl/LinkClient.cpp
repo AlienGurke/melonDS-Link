@@ -502,6 +502,15 @@ void Client::pollEvents()
         remoteLang.assign((const char*)out.data() + sizeof(ev), std::min<size_t>(ev.romPathLen, 3));
         return;
     }
+    if (ev.type == LINK_EVENT_STOPGAME) { stopWanted = true; return; }
+    if (ev.type == LINK_EVENT_RESUME) { resumeWanted = true; return; }
+    if (ev.type == LINK_EVENT_VIDEO)
+    {
+        bool on = ev.reserved != 0;
+        if (on && !videoWanted) videoResync = true;   // the 3DS has nothing: send everything
+        videoWanted = on;
+        return;
+    }
     if (ev.type == LINK_EVENT_SCREENSHOT)
     {
         screenshotWanted = true;
@@ -628,6 +637,7 @@ void Client::worker(std::string host)
             remoteLang.assign(hello.lang, strnlen(hello.lang, sizeof(hello.lang)));
             if (remoteLang.empty()) remoteLang = "en";
         }
+        videoWanted = (hello.flags & LINK_HELLO_VIDEO_OFF) == 0;
 
         // --- UDP input stream ---
         udpAddr = tcpAddr;

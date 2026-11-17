@@ -107,6 +107,10 @@ public:
     // backup first). Blocking; returns "" on success, else the reason.
     std::string RestoreBackup(const std::string& romDir, const std::string& romName, const std::string& backupPath);
 
+    // tell the 3DS which game runs in melonDS ("" = none); in the background.
+    // launchDone: answers a game picked on the 3DS (it started or failed)
+    void SendSession(const std::string& running, bool launchDone = false);
+
     // tell the 3DS which games are on the PC (marked "PC" in its list);
     // done in the background
     void RequestOnPcSync() { syncRequested = true; upCv.notify_one(); }
@@ -122,6 +126,9 @@ private:
     static bool readRemote(const std::string& path, bool& exists, std::vector<uint8_t>& data);
     int askOn3ds(const std::string& text);   // 0 = A, 1 = B, -1 failed, -2 cancelled
     std::string lastSaveDir;
+    std::string sessionName;          // last sent (guarded by upMutex)
+    bool sessionPending = false, sessionDone = false;
+    void sendSessionNow();
 
     std::mutex copyMutex;                     // one ROM copy at a time
     std::atomic<uint32_t> launchCount { 0 };

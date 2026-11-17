@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        11u
+#define LINK_VERSION        12u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -74,7 +74,15 @@ enum LinkCommand
                                 last two lines are the labels for A and B. Shown on
                                 the 3DS; the answer comes as LINK_EVENT_ANSWER.
                                 Only the id (no text) takes the question away. */
+    LINK_CMD_SESSION    = 21,/* in: u8 flags (LINK_SESSION_*) + UTF-8 name of the game
+                                running in melonDS (empty = none). Sent on connect and
+                                whenever it changes. */
 };
+
+#define LINK_SESSION_LAUNCH_DONE 1u   /* a game picked on the 3DS was handled (started or failed) */
+
+/* LinkHelloResp.flags */
+#define LINK_HELLO_VIDEO_OFF 1u       /* the user turned the bottom screen picture off */
 
 /* send settings of the 3DS (0 = keep the current value) */
 typedef struct LinkTuning
@@ -96,6 +104,9 @@ enum LinkEventType
     LINK_EVENT_ANSWER = 2,   /* answer to LINK_CMD_ASK: romSize = id, reserved = 0 (A) / 1 (B) */
     LINK_EVENT_SCREENSHOT = 3, /* the user asked for a screenshot on the 3DS */
     LINK_EVENT_LANGUAGE = 4, /* the 3DS app switched language; the code ("de") as the ROM path */
+    LINK_EVENT_STOPGAME = 5, /* the user wants the game in melonDS ended */
+    LINK_EVENT_RESUME = 6,   /* the user is back in the game (melonDS may unpause) */
+    LINK_EVENT_VIDEO = 7,    /* bottom screen picture: reserved = 1 on, 0 off */
 };
 
 enum LinkStatus
@@ -132,6 +143,7 @@ typedef struct LINK_PACKED LinkHelloResp
     uint16_t isNew3DS;
     char     name[24];
     char     lang[4];        /* language of the 3DS app ("en", "de") */
+    uint32_t flags;          /* LINK_HELLO_* */
 } LinkHelloResp;
 
 typedef struct LINK_PACKED LinkStatResp

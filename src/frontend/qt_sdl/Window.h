@@ -269,6 +269,9 @@ public:
     std::vector<std::pair<QAction*, const char*>> linkTexts;
     std::vector<std::pair<QMenu*, const char*>> linkMenus;
     void retranslateLink();
+    bool linkPausedByLoss = false;
+    QAction* actLinkPauseOnLoss = nullptr;
+    std::string linkRunningGame();
     QAction* actNPStartHost;
     QAction* actNPStartClient;
     QAction* actNPTest;

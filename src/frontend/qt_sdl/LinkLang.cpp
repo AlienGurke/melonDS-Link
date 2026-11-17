@@ -34,6 +34,11 @@ const Entry kTexts[] = {
     {"menu.folder", "Open backup and ROM folder", "Backup- und ROM-Ordner öffnen"},
     {"menu.language", "Language", "Sprache"},
     {"menu.debug", "Debug", "Debug"},
+    {"menu.pauseonloss", "Pause the game when the 3DS disconnects", "Spiel pausieren, wenn der 3DS getrennt wird"},
+    {"pause.paused", "3DS Link: game paused - the 3DS is gone (continues when you are back in the game on the 3DS)",
+                     "3DS Link: Spiel pausiert – der 3DS ist weg (geht weiter, sobald du am 3DS wieder im Spiel bist)"},
+    {"pause.resumed", "3DS Link: game continues", "3DS Link: Spiel geht weiter"},
+    {"stop.done", "3DS Link: game ended from the 3DS", "3DS Link: Spiel vom 3DS aus beendet"},
     {"menu.speedtest", "Test and tune WiFi speed...", "WLAN-Geschwindigkeit testen und optimieren..."},
     {"menu.sdtest", "Test the 3DS SD card...", "SD-Karte des 3DS testen..."},
     {"menu.debugfolder", "Open debug folder (log)", "Debug-Ordner öffnen (Log)"},
@@ -188,6 +193,10 @@ const Entry kTexts[] = {
     {"test.inlog", "(also in melonDS-Link\\Debug\\link-log.txt)", "(steht auch in melonDS-Link\\Debug\\link-log.txt)"},
 };
 
+// files of another version are written anew from the built-in texts
+// (so changed texts in a new release reach the user)
+const char* const kFileVersion = "2";
+
 std::mutex g_mutex;
 std::string g_code = "en";
 std::map<std::string, std::map<std::string, QString>> g_langs;   // code -> key -> text
@@ -227,7 +236,8 @@ void writeFile(const QString& path, bool german)
     out.setEncoding(QStringConverter::Utf8);
     out << "# melonDS Link - " << (german ? "Deutsch" : "English") << "\n";
     out << "# key=text (UTF-8). %1, %2... are filled in. \\n = new line.\n";
-    out << "# Copy this file to add a language (e.g. fr.txt); missing keys fall back to English.\n\n";
+    out << "# Copy this file to add a language (e.g. fr.txt); missing keys fall back to English.\n";
+    out << "version=" << kFileVersion << "\n\n";
     for (const Entry& e : kTexts)
     {
         QString v = QString::fromUtf8(german ? e.de : e.en);
@@ -259,6 +269,9 @@ void InitLanguages(const std::string& code)
     {
         QString path = langDir() + "/" + c + ".txt";
         auto existing = readFile(path);
+        auto ver = existing.find("version");
+        if (ver == existing.end() || ver->second != kFileVersion) existing.clear();
+        existing.erase("version");
         bool complete = !existing.empty();
         for (const Entry& e : kTexts) if (!existing.count(e.key)) { complete = false; break; }
         if (!complete)
@@ -276,7 +289,8 @@ void InitLanguages(const std::string& code)
                     QTextStream out(&f);
                     out.setEncoding(QStringConverter::Utf8);
                     out << "# melonDS Link - " << target["language.name"] << "\n";
-                    out << "# key=text (UTF-8). %1, %2... are filled in. \\n = new line.\n\n";
+                    out << "# key=text (UTF-8). %1, %2... are filled in. \\n = new line.\n";
+                    out << "version=" << kFileVersion << "\n\n";
                     for (const Entry& e : kTexts)
                     {
                         QString v = target[e.key];

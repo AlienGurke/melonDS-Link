@@ -88,6 +88,7 @@ public:
     ~EmuInstance();
 
     int getInstanceID() { return instanceID; }
+    const std::string& getBaseAssetName() { return baseAssetName; }   // melonDS Link
     int getConsoleType() { return consoleType; }
     EmuThread* getEmuThread() { return emuThread; }
     melonDS::NDS* getNDS() { return nds; }

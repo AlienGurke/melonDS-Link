@@ -75,16 +75,36 @@ gibt es keine halb alten, halb neuen Bilder. Die Datenrate passt sich ans WLAN a
 | Start / Select | Start / Select               |
 | Steuerkreuz / Circle Pad | Steuerkreuz        |
 | Touchscreen    | Touchscreen (passend zum Anzeigemodus) |
-| SELECT + START kurz | melonDS-Link-Menü       |
+| SELECT + START | melonDS-Link-Menü            |
+| L + R + SELECT + START halten | App beenden   |
 | C-Stick hoch   | Original / Vergrößert        |
 | C-Stick runter | Spieleliste                  |
 | ZR (halten)    | Vorspulen                    |
 | ZL             | Bildschirme tauschen         |
 
-**melonDS-Link-Menü:** SELECT + START kurz zusammen drücken (das Spiel bekommt dabei
-nichts davon mit). Darin: Spieleliste, Anzeige (Vergrößert/Original), oberen Bildschirm
-ausschalten (spart Akku, geht beim nächsten Menü wieder an), Screenshot, Sprache, zurück, beenden.
-So ist alles auch ohne C-Stick erreichbar (alter 3DS / 2DS).
+**melonDS-Link-Menü:** SELECT + START zusammen drücken (das Spiel bekommt dabei
+nichts davon mit). Es zeigt nur, was gerade passt:
+- *Zurück zum Spiel*, *Spieleliste*, *Screenshot*
+- *Anzeige* (Vergrößert/Original)
+- *Bild unten an/aus*: aus = melonDS schickt kein Bild mehr, der untere 3DS-Bildschirm
+  wird dunkel, Touch und Tasten funktionieren weiter (wird gespeichert, Standard: an)
+- *Oberen Bildschirm ausschalten* (spart Akku, geht beim nächsten Menü wieder an)
+- *Sprache*
+- *Spiel am PC beenden* (mit Rückfrage; der Spielstand wird dabei noch geschrieben)
+- *App beenden* (mit Rückfrage, wenn ein Spiel läuft oder gerade gespeichert wird)
+
+Nach einer Aktion wie Screenshot geht es zurück ins Spiel, nicht in die Spieleliste.
+Alles ist auch ohne C-Stick erreichbar (alter 3DS / 2DS).
+
+**Schutz vor Versehen:**
+- Wählst du in der Spieleliste das Spiel, das gerade läuft, geht es einfach zurück ins
+  Spiel – es wird nie neu gestartet. Ein *anderes* Spiel startet erst nach einer Rückfrage
+  (nicht gespeicherter Fortschritt ginge verloren).
+- Geht die Verbindung verloren (App beendet, WLAN weg), pausiert melonDS das Spiel und
+  macht weiter, sobald du am 3DS wieder im Spiel bist (abschaltbar in melonDS:
+  **3DS Link → Spiel pausieren, wenn der 3DS getrennt wird**).
+- Startest du die App neu, während in melonDS noch ein Spiel läuft, fragt sie:
+  **A** Weiterspielen / **B** Spieleliste.
 
 **Screenshots:** im Menü *Screenshot* wählen – melonDS speichert beide DS-Bildschirme in
 der Auflösung, in der es sie berechnet (mit Hochskalierung und Texturfilter), als PNG in
@@ -101,7 +121,8 @@ erscheint als weitere Sprache) und `sd:/3ds/melonDS-Link/Language/*.txt` (3DS).
 **Debug:** WLAN-Test, SD-Karten-Test und das Log (`melonDS-Link/Debug/link-log.txt`)
 sind unter **3DS Link → Debug**.
 
-**Beenden:** SELECT + START ca. 1 Sekunde halten (oder im Menü *Beenden*).
+**Beenden:** L + R + SELECT + START ca. 1 Sekunde halten (oder im Menü *App beenden*).
+Wird gerade ein Spielstand geschrieben, fragt die App vorher nach.
 
 ## Bauen
 Mit devkitPro/devkitARM: `make -C link3ds`. GitHub Actions baut die App

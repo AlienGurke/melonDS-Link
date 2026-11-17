@@ -217,6 +217,13 @@ std::string Session::Tick(QWidget* parent, const std::string& saveDir)
         if (!prepError.empty())
         {
             Link::Get().PostMessage("3DS Link: " + prepError);
+            // the 3DS waits for the game it picked: tell it that nothing came of it
+            std::string running;
+            {
+                std::lock_guard<std::mutex> ul(upMutex);
+                running = sessionName;
+            }
+            SendSession(running, true);
             Link::Get().SetStatusText(prepError);
             prepError.clear();
             return "";
@@ -703,6 +710,40 @@ void Session::syncOnPc()
     Link::Get().Request(LINK_CMD_SETONPC, names.data(), (uint32_t)names.size(), status);
 }
 
+void Session::SendSession(const std::string& running, bool launchDone)
+{
+    {
+        std::lock_guard<std::mutex> lock(upMutex);
+        sessionName = running;
+        sessionPending = true;
+        sessionDone = sessionDone || launchDone;
+    }
+    upCv.notify_one();
+}
+
+void Session::sendSessionNow()
+{
+    std::string name;
+    bool done;
+    {
+        std::lock_guard<std::mutex> lock(upMutex);
+        if (!sessionPending) return;
+        name = sessionName;
+        done = sessionDone;
+        sessionPending = false;
+        sessionDone = false;
+    }
+    std::vector<uint8_t> payload(1 + name.size());
+    payload[0] = done ? LINK_SESSION_LAUNCH_DONE : 0;
+    memcpy(payload.data() + 1, name.data(), name.size());
+    uint16_t status = 0;
+    if (Link::Get().GetState() != State::Connected ||
+        !Link::Get().Request(LINK_CMD_SESSION, payload.data(), (uint32_t)payload.size(), status))
+    {
+        // try again with the next connection (the UI sends it on reconnect anyway)
+    }
+}
+
 void Session::SetActiveSave(const std::string& localPath)
 {
     std::lock_guard<std::mutex> lock(activeMutex);
@@ -774,8 +815,15 @@ void Session::uploader()
         std::vector<uint8_t> data;
         {
             std::unique_lock<std::mutex> lock(upMutex);
-            upCv.wait_for(lock, std::chrono::seconds(2), [this] { return upPending || stop || syncRequested; });
+            upCv.wait_for(lock, std::chrono::seconds(2), [this] { return upPending || stop || syncRequested || sessionPending; });
             if (stop) break;
+            if (sessionPending)
+            {
+                // small and the 3DS waits for it: before anything else
+                lock.unlock();
+                sendSessionNow();
+                continue;
+            }
             if (!upPending)
             {
                 if (syncRequested.exchange(false))

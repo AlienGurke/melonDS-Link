@@ -687,6 +687,16 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
             });
 
+            actLinkPauseOnLoss = menu->addAction("");
+            actLinkPauseOnLoss->setCheckable(true);
+            actLinkPauseOnLoss->setChecked(!globalCfg.GetBool("Link.NoPauseOnLoss"));
+            linkTexts.push_back({actLinkPauseOnLoss, "menu.pauseonloss"});
+            connect(actLinkPauseOnLoss, &QAction::toggled, this, [this](bool on)
+            {
+                globalCfg.SetBool("Link.NoPauseOnLoss", !on);
+                Config::Save();
+            });
+
             menu->addSeparator();
             QMenu* langMenu = menu->addMenu("");
             linkMenus.push_back({langMenu, "menu.language"});
@@ -2029,9 +2039,65 @@ void MainWindow::onLinkConnect()
     emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
 }
 
+std::string MainWindow::linkRunningGame()
+{
+    // the game started from the 3DS, while it is still the one in melonDS
+    std::string game = Link::Session::Get().ActiveGame();
+    if (game.empty() || !emuThread->emuIsActive() || emuInstance->getBaseAssetName() != game) return "";
+    return game;
+}
+
 void MainWindow::onLinkTick()
 {
-    if (Link::Get().GetState() == Link::State::Disconnected) return;
+    auto st = Link::Get().GetState();
+
+    // the 3DS went away (app closed, WiFi gone) in the middle of a game: pause,
+    // so nothing happens without a controller. Not when disconnected on purpose.
+    static Link::State lastState = Link::State::Disconnected;
+    if (lastState == Link::State::Connected && st == Link::State::Connecting &&
+        actLinkPauseOnLoss && actLinkPauseOnLoss->isChecked() &&
+        !linkRunningGame().empty() && emuThread->emuIsRunning())
+    {
+        emuThread->emuPause();
+        linkPausedByLoss = true;
+        emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.paused").c_str());
+    }
+    if (st == Link::State::Disconnected) linkPausedByLoss = false;
+    lastState = st;
+
+    if (st == Link::State::Disconnected) return;
+
+    // continue when the player is back in the game on the 3DS
+    if (Link::Get().TakeResumeRequest() && linkPausedByLoss)
+    {
+        linkPausedByLoss = false;
+        if (emuThread->emuIsActive() && !emuThread->emuIsRunning())
+        {
+            emuThread->emuUnpause();
+            emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.resumed").c_str());
+        }
+    }
+    // "End the game on the PC" from the 3DS menu (the save is written on the way out)
+    if (Link::Get().TakeStopRequest() && emuThread->emuIsActive())
+    {
+        linkPausedByLoss = false;
+        emuThread->emuStop(true);
+        emuInstance->osdAddMessage(0, "%s", Link::TrS("stop.done").c_str());
+    }
+
+    // the 3DS always knows which game runs here (after reconnects, too)
+    {
+        static std::string sentGame = "\x01";
+        static uint32_t sentConn = 0;
+        uint32_t conn = Link::Get().ConnectionCount();
+        std::string running = linkRunningGame();
+        if (st == Link::State::Connected && (running != sentGame || conn != sentConn))
+        {
+            sentGame = running;
+            sentConn = conn;
+            Link::Session::Get().SendSession(running);
+        }
+    }
 
     // after every (re)connect: tell the 3DS which games are on the PC
     static uint32_t syncedConnection = 0;
@@ -2056,6 +2122,7 @@ void MainWindow::onLinkTick()
     QString errorstr;
     if (!emuThread->bootROM(file, errorstr))
     {
+        Link::Session::Get().SendSession(linkRunningGame(), true);
         QMessageBox::critical(this, "melonDS Link", errorstr);
         return;
     }
