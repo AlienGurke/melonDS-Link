@@ -743,16 +743,26 @@ QPoint ScreenPanel::statusPos(int areaWidth, int areaHeight, int line)
     int dx = 0, dy = 0;
     if (statusMode == 3)
     {
-        // jumps every 2 minutes between 6 places one below the other near the
-        // top (never overlapping): each pixel is lit at most 1/6 of the time
+        // like mode 2 (a pixel every few seconds, hardly noticeable), but over a
+        // bigger area: down to 6 times its own height and 60 pixels to the side.
+        // Constant speed back and forth (zigzag) with two unrelated periods, so
+        // it sweeps the whole area evenly - also completely away from the top
+        // right spot, which is only covered a small part of the time.
         int total = 0;
         for (int i = 0; i < statusLines; i++) total += statusItems[i].bitmap.height();
-        static const int order[6] = {0, 3, 1, 4, 2, 5};   // far apart one after the other
-        qint64 step = QDateTime::currentMSecsSinceEpoch() / 120000;
-        int slot = order[step % 6];
-        dy = slot * (total + 4);
-        if (dy + total + 2 * (int)kOSDMargin > areaHeight) dy = 0;   // tiny window
-        dx = (int)((step * 7) % 4) * 8;
+        int rangeY = std::min(total * 6, areaHeight / 3 - total);
+        if (rangeY < 0) rangeY = 0;
+        const int rangeX = 60;
+        double t = QDateTime::currentMSecsSinceEpoch() / 1000.0;
+        auto zigzag = [](double t, double period)
+        {
+            double p = std::fmod(t, period) / period;
+            return p < 0.5 ? p * 2.0 : (1.0 - p) * 2.0;   // 0..1..0
+        };
+        // about 0.2 pixels a second down/up, 0.1 to the side
+        double periodY = std::max(60.0, 2.0 * rangeY / 0.2);
+        dy = (int)(zigzag(t, periodY) * rangeY);
+        dx = (int)(zigzag(t + 371.0, 2.0 * rangeX / 0.1 * 1.0937) * rangeX);
     }
     else if (statusMode == 2)
     {

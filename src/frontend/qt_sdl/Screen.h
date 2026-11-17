@@ -74,7 +74,7 @@ public:
     void osdAddMessage(unsigned int color, const char* msg);
     // melonDS Link: up to two lines in the top right corner (UTF-8, '\n' between).
     // mode 0 = hidden, 1 = fixed, 2 = drifting slowly and dimmer (kind to OLED screens),
-    // 3 = jumps every 2 minutes between 6 places one below the other near the top
+    // 3 = like 2, slowly sweeping a bigger area below the corner (OLED, safest)
     void osdSetStatus(const char* text, int mode);
     // melonDS Link: everything black (nothing lit on an OLED), e.g. while the 3DS is closed
     void setBlackout(bool on) { blackout = on; }
