@@ -162,7 +162,7 @@ static void linkCaptureBottomScreen(melonDS::NDS* nds)
 
 // melonDS Link: screenshot asked for on the 3DS - both DS screens at the
 // resolution melonDS renders them (top above bottom), saved as PNG
-static void linkScreenshot(melonDS::NDS* nds)
+static void linkScreenshot(melonDS::NDS* nds, int mode)
 {
     QImage shot;
     void* top = nullptr;
@@ -208,14 +208,26 @@ static void linkScreenshot(melonDS::NDS* nds)
 #endif
 
     std::string game = Link::Session::Get().ActiveGame();
-    std::thread([shot, game]
+    std::thread([shot, game, mode]
     {
         // encoding a PNG takes a moment: not on the emulator thread
         QString dir = QString::fromStdString(Link::Session::ScreenshotDir());
         QDir().mkpath(dir);
-        QString name = QString::fromStdString(game.empty() ? "melonDS" : game) + " " +
-                       QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss") + ".png";
-        bool ok = !shot.isNull() && shot.save(dir + "/" + name, "PNG");
+        QString base = QString::fromStdString(game.empty() ? "melonDS" : game) + " " +
+                       QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
+        // the image holds the top screen above the bottom one
+        const int h = shot.height() / 2;
+        bool ok = !shot.isNull();
+        QString name = base + ".png";
+        if (ok && mode == LINK_SHOT_TOP) ok = shot.copy(0, 0, shot.width(), h).save(dir + "/" + name, "PNG");
+        else if (ok && mode == LINK_SHOT_BOTTOM) ok = shot.copy(0, h, shot.width(), h).save(dir + "/" + name, "PNG");
+        else if (ok && mode == LINK_SHOT_SEPARATE)
+        {
+            ok = shot.copy(0, 0, shot.width(), h).save(dir + "/" + base + " top.png", "PNG") &&
+                 shot.copy(0, h, shot.width(), h).save(dir + "/" + base + " bottom.png", "PNG");
+            name = base + " top/bottom.png";
+        }
+        else if (ok) ok = shot.save(dir + "/" + name, "PNG");
         if (ok)
         {
             Link::Get().PostMessage(Link::Tr("shot.saved").arg(name).toStdString());
@@ -488,8 +500,9 @@ void EmuThread::run()
                 nlines = emuInstance->nds->RunFrame();
             }
 
-            if (emuInstance->instanceID == 0 && Link::Get().TakeScreenshotRequest())
-                linkScreenshot(emuInstance->nds);
+            int shotMode;
+            if (emuInstance->instanceID == 0 && Link::Get().TakeScreenshotRequest(shotMode))
+                linkScreenshot(emuInstance->nds, shotMode);
 
             // melonDS Link: send the bottom screen to the 3DS, at most ~60 times a second
             if (emuInstance->instanceID == 0 && Link::Get().WantsVideo())

@@ -527,7 +527,7 @@ void Client::pollEvents()
     }
     if (ev.type == LINK_EVENT_SCREENSHOT)
     {
-        screenshotWanted = true;
+        screenshotWanted = (int)(ev.reserved < LINK_SHOT_MODES ? ev.reserved : LINK_SHOT_BOTH);
         return;
     }
     if (ev.type != LINK_EVENT_LAUNCH) return;
@@ -592,6 +592,12 @@ bool Client::TakeAnswer(uint32_t id, int& choice)
 std::string Client::Tr3DS(const char* key)
 {
     return TrIn(RemoteLanguage(), key).toStdString();
+}
+
+bool Client::SetOptions(uint32_t opts)
+{
+    uint16_t status;
+    return Request(LINK_CMD_OPTIONS, &opts, 4, status) && status == LINK_OK;
 }
 
 bool Client::SetStatusText(const std::string& text)
@@ -766,6 +772,12 @@ void Client::worker(std::string host)
                 lastInput.dsTouchX = pkt.dsTouchX;
                 lastInput.dsTouchY = pkt.dsTouchY;
                 lastInput.flags = pkt.flags;
+                console.known = true;
+                console.battery = (pkt.status & 0xFF) <= 100 ? (int)(pkt.status & 0xFF) : -1;
+                console.wifi = ((pkt.status >> 8) & 0xFF) <= 3 ? (int)((pkt.status >> 8) & 0xFF) : -1;
+                console.charging = (pkt.status & LINK_STATUS_CHARGING) != 0;
+                console.lidClosed = (pkt.status & LINK_STATUS_LIDCLOSED) != 0;
+                lidClosed = console.lidClosed;
                 if (pkt.flags & LINK_INPUT_VIDEOACK)
                 {
                     std::lock_guard<std::mutex> vlock(videoMutex);

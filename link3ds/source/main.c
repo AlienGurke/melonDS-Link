@@ -90,6 +90,7 @@ enum StrId
     S_D_SWITCH_T,
     S_M_BACKUPS, S_B_LOADING, S_B_NONE, S_B_HINT, S_D_RESTORE_T, S_D_RESTORE_1, S_D_RESTORE_2,
     S_D_RESTORE_A, S_RESTORING, S_CONFIRM_HINT,
+    S_M_SHOTMODE, S_SHOT_BOTH, S_SHOT_TOP, S_SHOT_BOTTOM, S_SHOT_SEPARATE,
     S_COUNT
 };
 
@@ -114,6 +115,7 @@ static const char* const g_strs[LANG_COUNT][S_COUNT] = {
         "A load   B back", "Load this backup onto the 3DS?", "The current save is kept as a backup.",
         "The game in melonDS is ended for this.", "Load backup", "Loading the backup...",
         "L+R+A confirm   B back",
+        "Screenshot shows", "both screens", "top screen", "bottom screen", "both, separate files",
     },
     {   /* Deutsch */
         "melonDS Link", "IP-Adresse:", "verbunden", "wartet...", "Steuerung:", "aktiv", "Bild:",
@@ -136,6 +138,7 @@ static const char* const g_strs[LANG_COUNT][S_COUNT] = {
         "A laden   B zurück", "Dieses Backup auf den 3DS laden?", "Der aktuelle Spielstand wird als Backup aufgehoben.",
         "Das Spiel in melonDS wird dafür beendet.", "Backup laden", "Backup wird geladen...",
         "L+R+A bestätigen   B zurück",
+        "Screenshot zeigt", "beide Bildschirme", "oberen Bildschirm", "unteren Bildschirm", "beide, eigene Dateien",
     },
 };
 static char g_tr[S_COUNT][80];   /* current language, already in code page 437 */
@@ -154,6 +157,7 @@ static const char* const g_strKeys[S_COUNT] = {
     "switch_title",
     "menu_backups", "backups_loading", "backups_none", "backups_hint", "restore_title", "restore_note",
     "restore_note_running", "restore_confirm", "restoring", "confirm_hint",
+    "menu_shotmode", "shot_both", "shot_top", "shot_bottom", "shot_separate",
 };
 #define LANG_FILE_VERSION 2   /* files of an older version are written anew */
 static char g_custom[LANG_COUNT][S_COUNT][80];   /* from the files ("" = built-in) */
@@ -389,6 +393,12 @@ static volatile bool g_haveStopEv = false, g_haveResumeEv = false, g_haveVideoEv
 static volatile bool g_saveWriting = false;      /* a save is between WRITE and REPLACE */
 static volatile u64 g_saveWriteTime = 0;
 static volatile bool g_confirmPress = false;     /* L + R + A pressed (input -> main) */
+static int g_shotMode = LINK_SHOT_BOTH;          /* what the screenshot shows (setting) */
+/* state of the console, sent to melonDS with every input packet */
+static volatile u8 g_battery = 255, g_wifi = 255;
+static volatile bool g_charging = false, g_lidClosed = false;
+static volatile bool g_keepAwake = false;        /* melonDS: closing the 3DS keeps the game running */
+static volatile u32 g_sockGen = 0;               /* bumped after waking up: sockets are made anew */
 /* save backups on the PC, listed on the 3DS (guarded by g_lock) */
 #define BAK_MAX 14
 static volatile bool g_bakOpen = false, g_bakWaiting = false;
@@ -1047,7 +1057,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
                 g_haveAnswer = false;
             }
             else if (g_haveStopEv) { ev.type = LINK_EVENT_STOPGAME; g_haveStopEv = false; }
-            else if (g_haveShot) { ev.type = LINK_EVENT_SCREENSHOT; g_haveShot = false; }
+            else if (g_haveShot) { ev.type = LINK_EVENT_SCREENSHOT; ev.reserved = (u32)g_shotMode; g_haveShot = false; }
             else if (g_haveVideoEv)
             {
                 ev.type = LINK_EVENT_VIDEO;
@@ -1139,6 +1149,15 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         g_askId = id;
         g_askActive = true;
         LightLock_Unlock(&g_lock);
+        return sendResponse(fd, h, LINK_OK, NULL, 0);
+    }
+
+    case LINK_CMD_OPTIONS:
+    {
+        if (h->len < 4) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
+        u32 opts;
+        memcpy(&opts, payload, 4);
+        g_keepAwake = (opts & LINK_OPT_KEEP_AWAKE) != 0;   /* the main thread applies it */
         return sendResponse(fd, h, LINK_OK, NULL, 0);
     }
 
@@ -1470,11 +1489,51 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
 
 static int g_listenFd = -1;
 
+/* sockets (also made anew after the 3DS woke up: sleep can break them) */
+static int openListenSocket(void)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (fd < 0) return fd;
+    int one = 1;   /* allow restarting right away (port may still be in TIME_WAIT) */
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(LINK_TCP_PORT);
+    bind(fd, (struct sockaddr*)&addr, sizeof(addr));
+    listen(fd, 1);
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    return fd;
+}
+
+static int openUdpSocket(u16 port, int rcvbuf)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+    if (fd < 0) return fd;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(port);
+    bind(fd, (struct sockaddr*)&addr, sizeof(addr));
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    if (rcvbuf) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+    return fd;
+}
+
 static void serverThread(void* arg)
 {
     (void)arg;
+    u32 gen = g_sockGen;
     while (g_running)
     {
+        if (gen != g_sockGen)
+        {
+            gen = g_sockGen;
+            close(g_listenFd);
+            g_listenFd = openListenSocket();
+        }
         struct sockaddr_in peer;
         socklen_t plen = sizeof(peer);
         int fd = accept(g_listenFd, (struct sockaddr*)&peer, &plen);
@@ -1499,7 +1558,7 @@ static void serverThread(void* arg)
         LightLock_Unlock(&g_lock);
         g_tcpConnected = true;
 
-        while (g_running)
+        while (g_running && gen == g_sockGen)
         {
             LinkHeader h;
             if (!recvAll(fd, &h, sizeof(h))) break;
@@ -1685,8 +1744,15 @@ static void videoThread(void* arg)
     u64 lastPresent = 0;
 
     int burst = 0;
+    u32 gen = g_sockGen;
     while (g_running)
     {
+        if (gen != g_sockGen)
+        {
+            gen = g_sockGen;
+            close(g_videoFd);
+            g_videoFd = openUdpSocket(LINK_VIDEO_PORT, 128 * 1024);
+        }
         /* never hog the CPU, however much picture data comes in */
         if (++burst >= 48) { burst = 0; svcSleepThread(500000); }
         /* big transfer or SD card write: leave the socket service alone, even
@@ -1807,10 +1873,19 @@ static void inputThread(void* arg)
     int heloCheck = 0;
     u64 upSince[32];          /* per key: since when it is released */
     for (int i = 0; i < 32; i++) upSince[i] = 0;
+    u32 gen = g_sockGen;
 
     while (g_running)
     {
         u64 start = osGetTime();
+        if (gen != g_sockGen)
+        {
+            /* woke up: new socket, melonDS says hello again */
+            gen = g_sockGen;
+            close(g_udpFd);
+            g_udpFd = openUdpSocket(LINK_UDP_PORT, 0);
+            havePeer = false;
+        }
 
         hidScanInput();
         u32 held = hidKeysHeld();
@@ -1914,6 +1989,8 @@ static void inputThread(void* arg)
             p.dsTouchX = dsX;
             p.dsTouchY = dsY;
             p.flags = (dsTouch ? LINK_INPUT_DSTOUCH : 0) | (g_zoom ? LINK_INPUT_ZOOM : 0);
+            p.status = (u32)g_battery | ((u32)g_wifi << 8) | (g_charging ? LINK_STATUS_CHARGING : 0) |
+                       (g_lidClosed ? LINK_STATUS_LIDCLOSED : 0);
             LightLock_Lock(&g_ackLock);
             if (g_ackValid)
             {
@@ -2075,6 +2152,17 @@ static void aptHookFunc(APT_HookType hook, void* param)
         setTopBacklight(true);
         setBottomBacklight(true);
     }
+    else if (hook == APTHOOK_ONSLEEP)
+    {
+        /* closed: tell melonDS right away (it pauses), before the WiFi goes */
+        g_lidClosed = true;
+        svcSleepThread(60000000LL);
+    }
+    else if (hook == APTHOOK_ONWAKEUP)
+    {
+        g_lidClosed = false;
+        g_sockGen++;   /* the sleep may have broken the sockets */
+    }
 }
 
 static void loadConfig(void)
@@ -2088,6 +2176,7 @@ static void loadConfig(void)
         char dir[128];
         if (sscanf(line, "zoom=%d", &v) == 1) g_zoom = v != 0;
         else if (sscanf(line, "videooff=%d", &v) == 1) g_videoOff = v != 0;
+        else if (sscanf(line, "shotmode=%d", &v) == 1) g_shotMode = v >= 0 && v < LINK_SHOT_MODES ? v : 0;
         else if (sscanf(line, "lang=%d", &v) == 1) g_lang = v;
         else if (strncmp(line, "last=", 5) == 0)
         {
@@ -2110,6 +2199,7 @@ static void saveConfig(void)
     if (!f) return;
     fprintf(f, "zoom=%d\n", g_zoom ? 1 : 0);
     fprintf(f, "videooff=%d\n", g_videoOff ? 1 : 0);
+    fprintf(f, "shotmode=%d\n", g_shotMode);
     fprintf(f, "lang=%d\n", g_lang);
     fprintf(f, "romdir=%s\n", g_romDir);
     if (g_lastGame[0]) fprintf(f, "last=%s\n", g_lastGame);
@@ -2117,6 +2207,42 @@ static void saveConfig(void)
 }
 
 /* ------------------------------------------------------------------ */
+
+/* battery, charging, WiFi and the lid. The services are only opened for the
+   moment of asking (see lcdBacklight). */
+static void readConsoleState(bool battery)
+{
+    if (battery)
+    {
+        u8 pct = 255;
+        if (R_SUCCEEDED(mcuHwcInit()))
+        {
+            if (R_FAILED(MCUHWC_GetBatteryLevel(&pct)) || pct > 100) pct = 255;
+            mcuHwcExit();
+        }
+        if (R_SUCCEEDED(ptmuInit()))
+        {
+            u8 charging = 0, level = 0;
+            if (R_SUCCEEDED(PTMU_GetBatteryChargeState(&charging))) g_charging = charging != 0;
+            if (pct == 255 && R_SUCCEEDED(PTMU_GetBatteryLevel(&level)) && level <= 5) pct = level * 20;
+            ptmuExit();
+        }
+        g_battery = pct;
+    }
+    u8 w = osGetWifiStrength();
+    g_wifi = w <= 3 ? w : 255;
+}
+
+static bool readLidClosed(void)
+{
+    u8 open = 1;
+    if (R_SUCCEEDED(ptmuInit()))
+    {
+        PTMU_GetShellState(&open);
+        ptmuExit();
+    }
+    return open == 0;
+}
 
 int main(int argc, char** argv)
 {
@@ -2166,33 +2292,9 @@ int main(int argc, char** argv)
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-    /* TCP listen socket */
-    g_listenFd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-    {
-        /* allow restarting the app right away (port may still be in TIME_WAIT) */
-        int one = 1;
-        setsockopt(g_listenFd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-    }
-    addr.sin_port = htons(LINK_TCP_PORT);
-    bind(g_listenFd, (struct sockaddr*)&addr, sizeof(addr));
-    listen(g_listenFd, 1);
-    fcntl(g_listenFd, F_SETFL, fcntl(g_listenFd, F_GETFL, 0) | O_NONBLOCK);
-
-    /* UDP input socket */
-    g_udpFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-    addr.sin_port = htons(LINK_UDP_PORT);
-    bind(g_udpFd, (struct sockaddr*)&addr, sizeof(addr));
-    fcntl(g_udpFd, F_SETFL, fcntl(g_udpFd, F_GETFL, 0) | O_NONBLOCK);
-
-    /* UDP video socket */
-    g_videoFd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-    addr.sin_port = htons(LINK_VIDEO_PORT);
-    bind(g_videoFd, (struct sockaddr*)&addr, sizeof(addr));
-    fcntl(g_videoFd, F_SETFL, fcntl(g_videoFd, F_GETFL, 0) | O_NONBLOCK);
-    {
-        int rcv = 128 * 1024;   /* room for bursts of tile packets */
-        setsockopt(g_videoFd, SOL_SOCKET, SO_RCVBUF, &rcv, sizeof(rcv));
-    }
+    g_listenFd = openListenSocket();
+    g_udpFd = openUdpSocket(LINK_UDP_PORT, 0);
+    g_videoFd = openUdpSocket(LINK_VIDEO_PORT, 128 * 1024);   /* room for bursts of tile packets */
 
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
@@ -2210,6 +2312,8 @@ int main(int argc, char** argv)
     bool lastZoom = !g_zoom, lastHaveVideo = true;
     bool savedZoom = g_zoom;
     int menuCursor = 0, menuTop = 0, linkCursor = 0;
+    u64 lastStateRead = 0, lastBatteryRead = 0;
+    bool sleepApplied = false, keepAwakeApplied = false, wasLidDark = false;
     bool isNew3DS = false;
     APT_CheckNew3DS(&isNew3DS);
     if (g_lastGame[0]) { int i = findGame(g_lastGame); if (i >= 0) menuCursor = i; }
@@ -2304,16 +2408,40 @@ int main(int argc, char** argv)
             mk = 0;
         }
         /* whenever something is shown, the top screen has to be on */
-        if (g_topOff && (g_menuOpen || g_linkMenuOpen || askActive || localAsk != LA_NONE)) setTopBacklight(true);
-        setBottomBacklight(!g_videoOff);
+        /* battery, WiFi, lid: twice a second (the battery every 30 s) */
+        {
+            u64 now = osGetTime();
+            if (now - lastStateRead >= 500)
+            {
+                bool bat = lastBatteryRead == 0 || now - lastBatteryRead >= 30000;
+                if (bat) lastBatteryRead = now;
+                lastStateRead = now;
+                readConsoleState(bat);
+                if (!sleepApplied || keepAwakeApplied != g_keepAwake)
+                {
+                    /* melonDS setting: closed = sleep (it pauses the game) or stay awake */
+                    aptSetSleepAllowed(!g_keepAwake);
+                    keepAwakeApplied = g_keepAwake;
+                    sleepApplied = true;
+                }
+                if (g_keepAwake) g_lidClosed = readLidClosed();   /* else the sleep hooks tell */
+            }
+        }
+        bool lidDark = g_keepAwake && g_lidClosed;   /* closed, game runs on: screens off */
+        if (lidDark) setTopBacklight(false);
+        else if (wasLidDark) setTopBacklight(true);
+        wasLidDark = lidDark;
+        if (!lidDark && g_topOff && (g_menuOpen || g_linkMenuOpen || askActive || localAsk != LA_NONE)) setTopBacklight(true);
+        setBottomBacklight(!g_videoOff && !lidDark);
 
         /* the menu: only what makes sense right now */
-        enum { MI_BACK, MI_GAMES, MI_SHOT, MI_BACKUPS, MI_DISPLAY, MI_BOTTOM, MI_TOPOFF, MI_LANG, MI_STOP, MI_QUIT };
+        enum { MI_BACK, MI_GAMES, MI_SHOT, MI_SHOTMODE, MI_BACKUPS, MI_DISPLAY, MI_BOTTOM, MI_TOPOFF, MI_LANG, MI_STOP, MI_QUIT };
         int items[12], itemCount = 0;
         bool playing = g_gameStarted && !g_launchPending;
         if (g_gameStarted) items[itemCount++] = MI_BACK;
         items[itemCount++] = MI_GAMES;
         if (playing && g_tcpConnected) items[itemCount++] = MI_SHOT;
+        items[itemCount++] = MI_SHOTMODE;
         /* backups: of the running game, else of the game selected in the list */
         int bakGame = -1;
         if (g_gameStarted)
@@ -2410,6 +2538,10 @@ int main(int argc, char** argv)
                     break;
                 case MI_GAMES: g_linkMenuOpen = false; g_menuOpen = true; break;
                 case MI_DISPLAY: g_zoom = !g_zoom; break;
+                case MI_SHOTMODE:
+                    g_shotMode = (g_shotMode + 1) % LINK_SHOT_MODES;
+                    saveConfig();
+                    break;
                 case MI_BOTTOM:
                     g_videoOff = !g_videoOff;
                     g_haveVideoEv = true;
@@ -2615,6 +2747,11 @@ int main(int argc, char** argv)
                 case MI_BACK: snprintf(label, sizeof(label), "%s", T(S_M_BACK)); break;
                 case MI_GAMES: snprintf(label, sizeof(label), "%s", T(S_M_GAMES)); break;
                 case MI_SHOT: snprintf(label, sizeof(label), "%s", T(S_M_SHOT)); break;
+                case MI_SHOTMODE:
+                    snprintf(label, sizeof(label), "%s: %s", T(S_M_SHOTMODE),
+                             T(g_shotMode == LINK_SHOT_TOP ? S_SHOT_TOP : g_shotMode == LINK_SHOT_BOTTOM ? S_SHOT_BOTTOM :
+                               g_shotMode == LINK_SHOT_SEPARATE ? S_SHOT_SEPARATE : S_SHOT_BOTH));
+                    break;
                 case MI_DISPLAY: snprintf(label, sizeof(label), "%s: %s", T(S_M_DISPLAY), zoom ? T(S_ENLARGED) : T(S_ORIGINAL)); break;
                 case MI_BOTTOM: snprintf(label, sizeof(label), "%s: %s", T(S_M_BOTTOM), g_videoOff ? T(S_OFF) : T(S_ON)); break;
                 case MI_TOPOFF: snprintf(label, sizeof(label), "%s", T(S_M_TOPOFF)); break;

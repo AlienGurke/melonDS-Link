@@ -71,7 +71,7 @@ public:
     // bgra=true: bytes B,G,R,A (software renderer), false: R,G,B,A (OpenGL).
     // Cheap: converts and hands the frame to the sender thread.
     void SubmitBottomScreen(const uint32_t* pixels, bool bgra);
-    bool WantsVideo() const { return state.load() == State::Connected && videoWanted.load(); }
+    bool WantsVideo() const { return state.load() == State::Connected && videoWanted.load() && !lidClosed.load(); }
 
     // messages for the on-screen display (connected, lost, ...)
     bool PopMessage(std::string& msg);
@@ -130,7 +130,23 @@ public:
     std::string Tr3DS(const char* key);
 
     // the user asked for a screenshot on the 3DS (cleared by reading)
-    bool TakeScreenshotRequest() { return screenshotWanted.exchange(false); }
+    // mode: LINK_SHOT_* (what the user chose on the 3DS)
+    bool TakeScreenshotRequest(int& mode) { int m = screenshotWanted.exchange(-1); if (m < 0) return false; mode = m; return true; }
+    bool TakeScreenshotRequest() { int m; return TakeScreenshotRequest(m); }
+
+    // state of the console (kept after the connection is gone)
+    struct ConsoleState
+    {
+        bool known = false;
+        int battery = -1;      // percent, -1 = unknown
+        int wifi = -1;         // 0..3, -1 = unknown
+        bool charging = false;
+        bool lidClosed = false;
+    };
+    ConsoleState GetConsoleState() { std::lock_guard<std::mutex> l(inputMutex); return console; }
+
+    // settings made in melonDS that the 3DS app needs (LINK_OPT_*)
+    bool SetOptions(uint32_t opts);
     // the user wants the game ended / is back in the game (3DS menu)
     bool TakeStopRequest() { return stopWanted.exchange(false); }
     bool TakeResumeRequest() { return resumeWanted.exchange(false); }
@@ -175,10 +191,12 @@ private:
     bool haveAnswer = false;
     uint32_t answerId = 0;
     int answerChoice = 0;
-    std::atomic<bool> screenshotWanted { false };
+    std::atomic<int> screenshotWanted { -1 };
+    ConsoleState console;   // guarded by inputMutex
     std::atomic<bool> stopWanted { false };
     std::atomic<bool> resumeWanted { false };
     std::atomic<bool> videoWanted { true };   // bottom screen picture on (3DS setting)
+    std::atomic<bool> lidClosed { false };    // closed (and awake): nobody sees the picture
     std::string remoteLang = "en";
     bool haveBakList = false, haveRestore = false;
     std::string bakListRom, restoreRom;

@@ -666,6 +666,10 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             linkTexts.push_back({actLinkDisconnect, "menu.disconnect"});
             connect(actLinkDisconnect, &QAction::triggered, this, &MainWindow::onLinkDisconnect);
 
+            actLinkStatusInfo = menu->addAction("");
+            actLinkStatusInfo->setEnabled(false);
+            actLinkStatusInfo->setVisible(false);
+
             menu->addSeparator();
             QAction* actLinkRoms = menu->addAction("");
             linkTexts.push_back({actLinkRoms, "menu.roms"});
@@ -694,6 +698,33 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             connect(actLinkPauseOnLoss, &QAction::toggled, this, [this](bool on)
             {
                 globalCfg.SetBool("Link.NoPauseOnLoss", !on);
+                Config::Save();
+            });
+            actLinkPauseOnLid = menu->addAction("");
+            actLinkPauseOnLid->setCheckable(true);
+            actLinkPauseOnLid->setChecked(!globalCfg.GetBool("Link.NoPauseOnLid"));
+            linkTexts.push_back({actLinkPauseOnLid, "menu.pauseonlid"});
+            connect(actLinkPauseOnLid, &QAction::toggled, this, [this](bool on)
+            {
+                globalCfg.SetBool("Link.NoPauseOnLid", !on);
+                Config::Save();
+            });
+            actLinkAutoConnect = menu->addAction("");
+            actLinkAutoConnect->setCheckable(true);
+            actLinkAutoConnect->setChecked(globalCfg.GetBool("Link.AutoConnect"));
+            linkTexts.push_back({actLinkAutoConnect, "menu.autoconnect"});
+            connect(actLinkAutoConnect, &QAction::toggled, this, [this](bool on)
+            {
+                globalCfg.SetBool("Link.AutoConnect", on);
+                Config::Save();
+            });
+            actLinkShowStatus = menu->addAction("");
+            actLinkShowStatus->setCheckable(true);
+            actLinkShowStatus->setChecked(globalCfg.GetBool("Link.ShowStatus"));
+            linkTexts.push_back({actLinkShowStatus, "menu.showstatus"});
+            connect(actLinkShowStatus, &QAction::toggled, this, [this](bool on)
+            {
+                globalCfg.SetBool("Link.ShowStatus", on);
                 Config::Save();
             });
 
@@ -871,6 +902,16 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 }
                 Link::Session::SkipPadding = globalCfg.GetBool("Link.SkipPadding");
                 Link::Session::EmuActive = [this] { return emuThread->emuIsActive(); };
+                // connect right away with the last address (setting)
+                if (globalCfg.GetBool("Link.AutoConnect"))
+                {
+                    QString host = globalCfg.GetQString("Link.Host");
+                    if (!host.isEmpty())
+                    {
+                        Link::Get().Connect(host.toStdString());
+                        emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
+                    }
+                }
                 linkTimer = new QTimer(this);
                 connect(linkTimer, &QTimer::timeout, this, &MainWindow::onLinkTick);
                 linkTimer->start(200);
@@ -2012,12 +2053,28 @@ void MainWindow::onLANStartClient()
     LANStartClientDialog::openDlg(this);
 }
 
+QString MainWindow::linkStatusText()
+{
+    auto cs = Link::Get().GetConsoleState();
+    QString bat = cs.battery >= 0 ? QString("%1 %").arg(cs.battery) : QString("?");
+    if (cs.charging) bat += " " + Link::Tr("status.charging");
+    static const char* wifiKeys[] = {"status.wifi0", "status.wifi1", "status.wifi2", "status.wifi3"};
+    QString wifi = cs.wifi >= 0 ? Link::Tr(wifiKeys[cs.wifi]) : QString("?");
+    return Link::Tr("status.line").arg(bat, wifi);
+}
+
 void MainWindow::retranslateLink()
 {
     for (auto& [a, key] : linkTexts) a->setText(Link::Tr(key));
     for (auto& [m, key] : linkMenus) m->setTitle(Link::Tr(key));
     auto st = Link::Get().GetState();
     actLinkDisconnect->setEnabled(st != Link::State::Disconnected);
+    if (actLinkStatusInfo)
+    {
+        bool show = st == Link::State::Connected && Link::Get().GetConsoleState().known;
+        actLinkStatusInfo->setVisible(show);
+        if (show) actLinkStatusInfo->setText(linkStatusText());
+    }
     QString host = QString::fromStdString(Link::Get().GetHost());
     if (st == Link::State::Connected) actLinkConnect->setText(Link::Tr("menu.connected").arg(host));
     else if (st == Link::State::Connecting) actLinkConnect->setText(Link::Tr("menu.connecting").arg(host));
@@ -2101,6 +2158,72 @@ void MainWindow::onLinkTick()
                 emuThread->emuStop(true);
             }
             Link::Session::Get().RestoreFrom3ds(rom, index, token);
+        }
+    }
+
+    // the console: battery warnings, status now and then, lid closed
+    {
+        auto cs = Link::Get().GetConsoleState();
+        static int warnedAt = 101;      // lowest warning given (101 = none)
+        static int64_t lastStatusShown = 0;
+        static uint32_t statusConn = 0;
+        if (cs.battery >= 0)
+        {
+            if (cs.charging || cs.battery > warnedAt + 5) warnedAt = 101;
+            for (int th : {30, 20, 10})
+            {
+                if (!cs.charging && cs.battery <= th && warnedAt > th)
+                {
+                    // the lowest threshold reached (no three messages at once)
+                    int level = cs.battery <= 10 ? 10 : cs.battery <= 20 ? 20 : 30;
+                    warnedAt = level;
+                    const char* key = level <= 10 ? "battery.critical" : "battery.low";
+                    emuInstance->osdAddMessage(0xFFA040, "%s", Link::Tr(key).arg(cs.battery).toStdString().c_str());
+                    std::string t3 = QString::fromStdString(Link::Get().Tr3DS(key)).arg(cs.battery).toStdString();
+                    std::thread([t3] { Link::Get().SetStatusText(t3); }).detach();
+                    break;
+                }
+            }
+        }
+        // shown briefly every 10 minutes (and after connecting): nothing stays
+        // on the screen, so nothing burns into an OLED
+        int64_t nowS = QDateTime::currentSecsSinceEpoch();
+        uint32_t conn = Link::Get().ConnectionCount();
+        if (actLinkShowStatus && actLinkShowStatus->isChecked() && cs.known && st == Link::State::Connected &&
+            (conn != statusConn || nowS - lastStatusShown >= 600))
+        {
+            statusConn = conn;
+            lastStatusShown = nowS;
+            emuInstance->osdAddMessage(0, "%s", linkStatusText().toStdString().c_str());
+        }
+
+        // closed: pause (setting) - the 3DS reports it before it goes to sleep
+        bool pauseOnLid = !actLinkPauseOnLid || actLinkPauseOnLid->isChecked();
+        if (pauseOnLid && cs.lidClosed && !linkRunningGame().empty() && emuThread->emuIsRunning())
+        {
+            emuThread->emuPause();
+            linkPausedByLid = true;
+            emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.lid").c_str());
+        }
+        if (linkPausedByLid && !cs.lidClosed && st == Link::State::Connected)
+        {
+            linkPausedByLid = false;
+            linkPausedByLoss = false;
+            if (emuThread->emuIsActive() && !emuThread->emuIsRunning())
+            {
+                emuThread->emuUnpause();
+                emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.resumed").c_str());
+            }
+        }
+        // the 3DS needs to know: sleep when closed, or stay awake (game runs on)
+        static uint32_t optsConn = 0;
+        static int optsSent = -1;
+        uint32_t opts = pauseOnLid ? 0 : LINK_OPT_KEEP_AWAKE;
+        if (st == Link::State::Connected && (conn != optsConn || (int)opts != optsSent))
+        {
+            optsConn = conn;
+            optsSent = (int)opts;
+            std::thread([opts] { Link::Get().SetOptions(opts); }).detach();
         }
     }
 

@@ -113,7 +113,9 @@ bestätigt – ein einfaches A reicht dort nicht. **B** bricht ab.
 - Startest du die App neu, während in melonDS noch ein Spiel läuft, fragt sie:
   **A** Weiterspielen / **B** Spieleliste.
 
-**Screenshots:** im Menü *Screenshot* wählen – melonDS speichert beide DS-Bildschirme in
+**Screenshots:** Was auf das Bild kommt, stellst du im Menü unter *Screenshot zeigt* ein:
+beide Bildschirme, nur oben, nur unten oder beide als eigene Dateien (wird gespeichert).
+Dann im Menü *Screenshot* wählen – melonDS speichert beide DS-Bildschirme in
 der Auflösung, in der es sie berechnet (mit Hochskalierung und Texturfilter), als PNG in
 `melonDS-Link/Screenshots/` (in melonDS: **3DS Link → Screenshot-Ordner öffnen**).
 
@@ -124,6 +126,17 @@ in melonDS unter **3DS Link → Language**. Beide Einstellungen werden gespeiche
 melonDS auf dem 3DS anzeigt (Status, Fragen), kommen in der Sprache des 3DS. Die Texte
 stehen zum Anpassen in `melonDS-Link/Language/*.txt` (PC; eine neue Datei, z. B. `fr.txt`,
 erscheint als weitere Sprache) und `sd:/3ds/melonDS-Link/Language/*.txt` (3DS).
+
+**Einstellungen in melonDS (Menü 3DS Link):**
+- *Beim Start automatisch verbinden* – mit der zuletzt eingegebenen IP.
+- *Spiel pausieren, wenn der 3DS getrennt wird* (Standard: an).
+- *Spiel pausieren, wenn der 3DS zugeklappt wird* (Standard: an): der 3DS meldet das
+  Zuklappen noch, bevor er schläft; nach dem Aufklappen verbindet er sich neu und das Spiel
+  geht weiter. Aus = der 3DS schläft beim Zuklappen nicht, die Bildschirme gehen aus und das
+  Spiel läuft weiter.
+- *3DS-Akku und WLAN alle 10 Minuten kurz einblenden* (Standard: aus) – nur kurz, damit nichts
+  dauerhaft auf einem OLED steht. Den aktuellen Stand zeigt auch das Menü 3DS Link selbst.
+- Warnungen bei 30 %, 20 % und 10 % Akku kommen immer (am PC und auf dem 3DS).
 
 **Debug:** WLAN-Test, SD-Karten-Test und das Log (`melonDS-Link/Debug/link-log.txt`)
 sind unter **3DS Link → Debug**.

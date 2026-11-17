@@ -271,6 +271,12 @@ public:
     void retranslateLink();
     bool linkPausedByLoss = false;
     QAction* actLinkPauseOnLoss = nullptr;
+    QAction* actLinkAutoConnect = nullptr;
+    QAction* actLinkPauseOnLid = nullptr;
+    QAction* actLinkShowStatus = nullptr;
+    QAction* actLinkStatusInfo = nullptr;
+    bool linkPausedByLid = false;
+    QString linkStatusText();
     std::string linkRunningGame();
     QAction* actNPStartHost;
     QAction* actNPStartClient;

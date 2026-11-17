@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        13u
+#define LINK_VERSION        14u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -80,7 +80,10 @@ enum LinkCommand
     LINK_CMD_BACKUPLIST = 22,/* in: u32 token + UTF-8 text: first line the ROM path it
                                 belongs to, then one line per save backup on the PC
                                 (newest first). Answer to LINK_EVENT_BACKUPS. */
+    LINK_CMD_OPTIONS    = 23,/* in: u32 LINK_OPT_* (settings made in melonDS)  out: - */
 };
+
+#define LINK_OPT_KEEP_AWAKE 1u     /* closing the 3DS does not put it to sleep (game keeps running) */
 
 #define LINK_SESSION_LAUNCH_DONE 1u   /* a game picked on the 3DS was handled (started or failed) */
 
@@ -105,7 +108,7 @@ enum LinkEventType
 {
     LINK_EVENT_LAUNCH = 1,   /* the user picked a game on the 3DS */
     LINK_EVENT_ANSWER = 2,   /* answer to LINK_CMD_ASK: romSize = id, reserved = 0 (A) / 1 (B) */
-    LINK_EVENT_SCREENSHOT = 3, /* the user asked for a screenshot on the 3DS */
+    LINK_EVENT_SCREENSHOT = 3, /* the user asked for a screenshot on the 3DS; reserved = LINK_SHOT_* */
     LINK_EVENT_LANGUAGE = 4, /* the 3DS app switched language; the code ("de") as the ROM path */
     LINK_EVENT_STOPGAME = 5, /* the user wants the game in melonDS ended */
     LINK_EVENT_RESUME = 6,   /* the user is back in the game (melonDS may unpause) */
@@ -257,9 +260,16 @@ typedef struct LINK_PACKED LinkInputPacket
     /* video receipt: highest video packet seq received, and a bitmask of
        which of the 64 seqs up to it arrived (bit n = videoAckSeq - n) */
     uint32_t videoAckSeq;
-    uint32_t reserved2;
+    uint32_t status;   /* bits 0-7 battery % (255 = unknown), 8-15 WiFi strength 0-3
+                          (255 = unknown), 16+ LINK_STATUS_* */
     uint64_t videoAckMask;
 } LinkInputPacket;
+
+#define LINK_STATUS_CHARGING  (1u << 16)
+#define LINK_STATUS_LIDCLOSED (1u << 17)
+
+/* what a screenshot shows */
+enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SEPARATE = 3, LINK_SHOT_MODES = 4 };
 
 #define LINK_INPUT_DSTOUCH  1u     /* dsTouchX/Y valid: the DS screen is being touched */
 #define LINK_INPUT_ZOOM     2u     /* 3DS shows the DS screen enlarged */
