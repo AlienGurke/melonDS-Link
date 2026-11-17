@@ -1,5 +1,5 @@
 /*
-    melonDS Link - PC side client for the link3ds homebrew.
+    melonDS Link - PC side client for the 3DS-Link homebrew (github.com/AlienGurke/3DS-Link).
 
     One global client (instance 0 uses it). A worker thread keeps the TCP
     control connection and the UDP input stream alive; the emulator thread

@@ -1,6 +1,8 @@
 /*
     melonDS Link protocol
-    Shared between the melonDS frontend (PC) and the link3ds homebrew (3DS).
+    Shared between the melonDS frontend (PC) and the 3DS-Link homebrew (3DS).
+    The 3DS app lives in github.com/AlienGurke/3DS-Link (include/LinkProto.h);
+    keep both copies identical.
 
     Plain C so both sides can include it. Everything is little-endian,
     which both x86/ARM64 PCs and the 3DS are.
