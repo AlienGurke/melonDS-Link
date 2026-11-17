@@ -715,6 +715,16 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             return sendResponse(fd, h, LINK_ERR_DENIED, NULL, 0);
         const uint8_t* data = payload + sizeof(req) + req.pathLen;
         size_t dataLen = h->len - sizeof(req) - req.pathLen;
+        /* the data sits right behind the path, at an odd address: the 3DS file
+           system writes such buffers very slowly (512 KB took 10-18 s, the same
+           from an aligned buffer ~0.2 s). Copy it to an aligned buffer first. */
+        static u8* aligned = NULL;
+        if (!aligned) aligned = (u8*)memalign(0x1000, LINK_MAX_PAYLOAD + LINK_MAX_PATH + 64);
+        if (aligned && dataLen <= LINK_MAX_PAYLOAD + LINK_MAX_PATH + 64)
+        {
+            memcpy(aligned, data, dataLen);
+            data = aligned;
+        }
 
         u64 w0 = svcGetSystemTick();
         FILE* f = fopen(path, "r+b");
@@ -1006,6 +1016,8 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
                         { FSFILE_Write(fh, &wr, 0, lin, N, 0); FSFILE_Close(fh); } });
                     linearFree(lin);
                 }
+                SDT("FS unausgerichtet", { if (R_SUCCEEDED(FSUSER_OpenFile(&fh, ar, fsMakePath(PATH_UTF16, w), FS_OPEN_WRITE, 0)))
+                    { FSFILE_Write(fh, &wr, 0, heap + 97, N - 128, 0); FSFILE_Close(fh); } });
                 g_bulkActive = true;
                 svcSleepThread(50000000);   /* let the other threads notice */
                 SDT("FS ohne Netz", { if (R_SUCCEEDED(FSUSER_OpenFile(&fh, ar, fsMakePath(PATH_UTF16, w), FS_OPEN_WRITE, 0)))
