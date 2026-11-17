@@ -31,6 +31,22 @@ enum class State
     Connected,
 };
 
+// kinds of on-screen messages; each can be switched off in melonDS (errors always show)
+enum class Note
+{
+    Always = 0,
+    Connection,   // connected / lost / disconnected
+    Save,         // save written to the 3DS
+    Rom,          // ROM copied
+    Screenshot,   // screenshot saved
+    Pause,        // paused / continues / ended from the 3DS
+    Battery,      // battery hints
+    Count
+};
+// is this kind of message shown (setting); thread-safe
+bool NoteShown(Note n);
+void SetNoteShown(Note n, bool shown);
+
 struct LaunchRequest
 {
     std::string romPath;      // on the 3DS SD card, e.g. /roms/nds/Game.nds
@@ -155,7 +171,7 @@ public:
     bool TakeRestoreRequest(std::string& romPath, int& index, uint32_t& token);
 
     // show a message in melonDS (thread-safe)
-    void PostMessage(const std::string& msg) { pushMessage(msg); }
+    void PostMessage(const std::string& msg, Note kind = Note::Always) { if (NoteShown(kind)) pushMessage(msg); }
 
 private:
     void worker(std::string host);

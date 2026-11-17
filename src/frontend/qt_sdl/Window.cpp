@@ -743,6 +743,59 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     });
                     if (m == 2) linkStatusMenu->addSeparator();
                 }
+                // which lines (one below the other)
+                linkStatusMenu->addSeparator();
+                QAction* bat = linkStatusMenu->addAction(Link::Tr("status.show.battery"));
+                bat->setCheckable(true);
+                bat->setChecked(linkStatusBattery);
+                connect(bat, &QAction::toggled, this, [this](bool on)
+                {
+                    linkStatusBattery = on;
+                    globalCfg.SetBool("Link.StatusNoBattery", !on);
+                    Config::Save();
+                });
+                QAction* wifi = linkStatusMenu->addAction(Link::Tr("status.show.wifi"));
+                wifi->setCheckable(true);
+                wifi->setChecked(linkStatusWifi);
+                connect(wifi, &QAction::toggled, this, [this](bool on)
+                {
+                    linkStatusWifi = on;
+                    globalCfg.SetBool("Link.StatusNoWifi", !on);
+                    Config::Save();
+                });
+            });
+            linkStatusBattery = !globalCfg.GetBool("Link.StatusNoBattery");
+            linkStatusWifi = !globalCfg.GetBool("Link.StatusNoWifi");
+
+            // which messages melonDS shows (all by default; errors always)
+            static const struct { Link::Note note; const char* cfg; const char* key; } kNotes[] = {
+                {Link::Note::Connection, "Link.NoNotify.Connection", "notes.connection"},
+                {Link::Note::Save, "Link.NoNotify.Save", "notes.save"},
+                {Link::Note::Rom, "Link.NoNotify.Rom", "notes.rom"},
+                {Link::Note::Screenshot, "Link.NoNotify.Screenshot", "notes.screenshot"},
+                {Link::Note::Pause, "Link.NoNotify.Pause", "notes.pause"},
+                {Link::Note::Battery, "Link.NoNotify.Battery", "notes.battery"},
+            };
+            for (const auto& n : kNotes) Link::SetNoteShown(n.note, !globalCfg.GetBool(n.cfg));
+            linkNotesMenu = menu->addMenu("");
+            linkMenus.push_back({linkNotesMenu, "menu.notes"});
+            connect(linkNotesMenu, &QMenu::aboutToShow, this, [this]
+            {
+                linkNotesMenu->clear();
+                for (const auto& n : kNotes)
+                {
+                    QAction* a = linkNotesMenu->addAction(Link::Tr(n.key));
+                    a->setCheckable(true);
+                    a->setChecked(Link::NoteShown(n.note));
+                    Link::Note note = n.note;
+                    const char* cfg = n.cfg;
+                    connect(a, &QAction::toggled, this, [this, note, cfg](bool on)
+                    {
+                        Link::SetNoteShown(note, on);
+                        globalCfg.SetBool(cfg, !on);
+                        Config::Save();
+                    });
+                }
             });
 
             menu->addSeparator();
@@ -926,7 +979,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     if (!host.isEmpty())
                     {
                         Link::Get().Connect(host.toStdString());
-                        emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
+                        if (Link::NoteShown(Link::Note::Connection)) emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
                     }
                 }
                 linkTimer = new QTimer(this);
@@ -2080,6 +2133,26 @@ QString MainWindow::linkStatusText()
     return Link::Tr("status.line").arg(bat, wifi);
 }
 
+std::string MainWindow::linkStatusLines()
+{
+    auto cs = Link::Get().GetConsoleState();
+    std::string out;
+    if (linkStatusBattery)
+    {
+        QString bat = cs.battery >= 0 ? QString("%1 %").arg(cs.battery) : QString("?");
+        if (cs.charging) bat += " " + Link::Tr("status.charging");
+        out += Link::Tr("status.battery").arg(bat).toStdString();
+    }
+    if (linkStatusWifi)
+    {
+        static const char* wifiKeys[] = {"status.wifi0", "status.wifi1", "status.wifi2", "status.wifi3"};
+        QString wifi = cs.wifi >= 0 ? Link::Tr(wifiKeys[cs.wifi]) : QString("?");
+        if (!out.empty()) out += "\n";
+        out += Link::Tr("status.wifi").arg(wifi).toStdString();
+    }
+    return out;
+}
+
 void MainWindow::retranslateLink()
 {
     for (auto& [a, key] : linkTexts) a->setText(Link::Tr(key));
@@ -2110,7 +2183,7 @@ void MainWindow::onLinkConnect()
     Config::Save();
 
     Link::Get().Connect(host.toStdString());
-    emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
+    if (Link::NoteShown(Link::Note::Connection)) emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
 }
 
 std::string MainWindow::linkRunningGame()
@@ -2134,7 +2207,7 @@ void MainWindow::onLinkTick()
     {
         emuThread->emuPause();
         linkPausedByLoss = true;
-        emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.paused").c_str());
+        if (Link::NoteShown(Link::Note::Pause)) emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.paused").c_str());
     }
     if (st == Link::State::Disconnected) linkPausedByLoss = false;
     lastState = st;
@@ -2148,7 +2221,7 @@ void MainWindow::onLinkTick()
         if (emuThread->emuIsActive() && !emuThread->emuIsRunning())
         {
             emuThread->emuUnpause();
-            emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.resumed").c_str());
+            if (Link::NoteShown(Link::Note::Pause)) emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.resumed").c_str());
         }
     }
     // "End the game on the PC" from the 3DS menu (the save is written on the way out)
@@ -2156,7 +2229,7 @@ void MainWindow::onLinkTick()
     {
         linkPausedByLoss = false;
         emuThread->emuStop(true);
-        emuInstance->osdAddMessage(0, "%s", Link::TrS("stop.done").c_str());
+        if (Link::NoteShown(Link::Note::Pause)) emuInstance->osdAddMessage(0, "%s", Link::TrS("stop.done").c_str());
     }
 
     // save backups from the 3DS menu
@@ -2196,9 +2269,12 @@ void MainWindow::onLinkTick()
                     warnedAt = level;
                     const char* key = level <= 10 ? "battery.10" : level <= 20 ? "battery.20" : "battery.30";
                     const char* key3 = level <= 10 ? "battery.10.3ds" : "battery.low.3ds";
-                    emuInstance->osdAddMessage(0xFFA040, "%s", Link::Tr(key).arg(cs.battery).toStdString().c_str());
-                    std::string t3 = QString::fromStdString(Link::Get().Tr3DS(key3)).arg(cs.battery).toStdString();
-                    std::thread([t3] { Link::Get().SetStatusText(t3); }).detach();
+                    if (Link::NoteShown(Link::Note::Battery))
+                    {
+                        emuInstance->osdAddMessage(0xFFA040, "%s", Link::Tr(key).arg(cs.battery).toStdString().c_str());
+                        std::string t3 = QString::fromStdString(Link::Get().Tr3DS(key3)).arg(cs.battery).toStdString();
+                        std::thread([t3] { Link::Get().SetStatusText(t3); }).detach();
+                    }
                     break;
                 }
             }
@@ -2222,7 +2298,8 @@ void MainWindow::onLinkTick()
                 if (nowS - lastStatusShown < 6) shownMode = 2;
             }
         }
-        panel->osdSetStatus(shownMode ? linkStatusText().toStdString().c_str() : "", shownMode);
+        std::string lines = shownMode ? linkStatusLines() : std::string();
+        panel->osdSetStatus(lines.c_str(), lines.empty() ? 0 : shownMode);
 
         // closed: pause (setting) - the 3DS reports it before it goes to sleep
         bool pauseOnLid = !actLinkPauseOnLid || actLinkPauseOnLid->isChecked();
@@ -2230,7 +2307,7 @@ void MainWindow::onLinkTick()
         {
             emuThread->emuPause();
             linkPausedByLid = true;
-            emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.lid").c_str());
+            if (Link::NoteShown(Link::Note::Pause)) emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.lid").c_str());
         }
         if (linkPausedByLid && !cs.lidClosed && st == Link::State::Connected)
         {
@@ -2239,7 +2316,7 @@ void MainWindow::onLinkTick()
             if (emuThread->emuIsActive() && !emuThread->emuIsRunning())
             {
                 emuThread->emuUnpause();
-                emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.resumed").c_str());
+                if (Link::NoteShown(Link::Note::Pause)) emuInstance->osdAddMessage(0, "%s", Link::TrS("pause.resumed").c_str());
             }
         }
         // the 3DS needs to know: sleep when closed, or stay awake (game runs on)
@@ -2307,7 +2384,7 @@ void MainWindow::onLinkTick()
 void MainWindow::onLinkDisconnect()
 {
     Link::Get().Disconnect();
-    emuInstance->osdAddMessage(0, "%s", Link::TrS("connect.disconnected").c_str());
+    if (Link::NoteShown(Link::Note::Connection)) emuInstance->osdAddMessage(0, "%s", Link::TrS("connect.disconnected").c_str());
 }
 
 void MainWindow::onNPStartHost()

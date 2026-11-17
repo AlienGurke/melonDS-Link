@@ -278,6 +278,9 @@ public:
     QAction* actLinkStatusInfo = nullptr;
     bool linkPausedByLid = false;
     QString linkStatusText();
+    std::string linkStatusLines();   // the lines for the corner of the screen
+    bool linkStatusBattery = true, linkStatusWifi = true;
+    QMenu* linkNotesMenu = nullptr;
     std::string linkRunningGame();
     QAction* actNPStartHost;
     QAction* actNPStartClient;

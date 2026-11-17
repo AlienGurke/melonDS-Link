@@ -738,7 +738,7 @@ void ScreenPanel::osdSetStatus(const char* text, int mode)
     osdMutex.unlock();
 }
 
-QPoint ScreenPanel::statusPos(int areaWidth)
+QPoint ScreenPanel::statusPos(int areaWidth, int line)
 {
     int dx = 0, dy = 0;
     if (statusMode == 2)
@@ -749,7 +749,10 @@ QPoint ScreenPanel::statusPos(int areaWidth)
         dx = (int)(30.0 * (0.5 - 0.5 * std::cos(t * 6.283185307 / 613.0)));
         dy = (int)(20.0 * (0.5 - 0.5 * std::cos(t * 6.283185307 / 457.0)));
     }
-    return QPoint(areaWidth - (int)kOSDMargin - statusItem.bitmap.width() - dx, (int)kOSDMargin + dy);
+    // right-aligned, one line below the other
+    int y = (int)kOSDMargin + dy;
+    for (int i = 0; i < line; i++) y += statusItems[i].bitmap.height();
+    return QPoint(areaWidth - (int)kOSDMargin - statusItems[line].bitmap.width() - dx, y);
 }
 
 void ScreenPanel::osdUpdate()
@@ -759,17 +762,26 @@ void ScreenPanel::osdUpdate()
     if (statusDirty)
     {
         statusDirty = false;
-        if (statusRendered) osdDeleteItem(&statusItem);
-        statusRendered = false;
+        for (int i = 0; i < statusLines; i++) osdDeleteItem(&statusItems[i]);
+        statusLines = 0;
         if (statusMode != 0 && !statusText.empty())
         {
-            statusItem.id = (osdID++) & 0x7FFFFFFF;
-            statusItem.timestamp = QDateTime::currentMSecsSinceEpoch();
-            osdFromUtf8(statusItem.text, sizeof(statusItem.text), statusText.c_str());
-            statusItem.color = statusMode == 2 ? 0xB0B0B0 : 0xE0E0E0;   // a bit darker when it moves
-            statusItem.rainbowstart = -1;
-            osdRenderItem(&statusItem);
-            statusRendered = true;
+            size_t start = 0;
+            while (statusLines < 2 && start <= statusText.size())
+            {
+                size_t nl = statusText.find('\n', start);
+                std::string line = statusText.substr(start, nl == std::string::npos ? std::string::npos : nl - start);
+                OSDItem& it = statusItems[statusLines];
+                it.id = (osdID++) & 0x7FFFFFFF;
+                it.timestamp = QDateTime::currentMSecsSinceEpoch();
+                osdFromUtf8(it.text, sizeof(it.text), line.c_str());
+                it.color = statusMode == 2 ? 0x787878 : 0xD0D0D0;   // much dimmer when it moves (OLED)
+                it.rainbowstart = -1;
+                osdRenderItem(&it);
+                statusLines++;
+                if (nl == std::string::npos) break;
+                start = nl + 1;
+            }
         }
     }
 
@@ -976,7 +988,7 @@ void ScreenPanelNative::paintEvent(QPaintEvent* event)
             y += item.bitmap.height();
             it++;
         }
-        if (statusRendered) painter.drawImage(statusPos(width()), statusItem.bitmap);
+        for (int i = 0; i < statusLines; i++) painter.drawImage(statusPos(width(), i), statusItems[i].bitmap);
 
         osdMutex.unlock();
     }
@@ -1375,12 +1387,13 @@ void ScreenPanelGL::drawScreen()
             y += item.bitmap.height();
             it++;
         }
-        if (statusRendered && osdTextures.count(statusItem.id))
+        for (int i = 0; i < statusLines; i++)
         {
-            QPoint pos = statusPos((int)(w / factor));
-            glBindTexture(GL_TEXTURE_2D, osdTextures[statusItem.id]);
+            if (!osdTextures.count(statusItems[i].id)) continue;
+            QPoint pos = statusPos((int)(w / factor), i);
+            glBindTexture(GL_TEXTURE_2D, osdTextures[statusItems[i].id]);
             glUniform2i(osdPosULoc, pos.x(), pos.y());
-            glUniform2i(osdSizeULoc, statusItem.bitmap.width(), statusItem.bitmap.height());
+            glUniform2i(osdSizeULoc, statusItems[i].bitmap.width(), statusItems[i].bitmap.height());
             glDrawArrays(GL_TRIANGLES, 0, 2*3);
         }
 

@@ -230,7 +230,7 @@ static void linkScreenshot(melonDS::NDS* nds, int mode)
         else if (ok) ok = shot.save(dir + "/" + name, "PNG");
         if (ok)
         {
-            Link::Get().PostMessage(Link::Tr("shot.saved").arg(name).toStdString());
+            Link::Get().PostMessage(Link::Tr("shot.saved").arg(name).toStdString(), Link::Note::Screenshot);
             Link::Get().SetStatusText(Link::Get().Tr3DS("shot.saved3ds"));
         }
         else

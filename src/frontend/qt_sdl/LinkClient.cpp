@@ -37,6 +37,19 @@ typedef int sock_t;
 namespace Link
 {
 
+static std::atomic<uint32_t> g_mutedNotes { 0 };
+
+bool NoteShown(Note n)
+{
+    return n == Note::Always || !(g_mutedNotes.load() & (1u << (int)n));
+}
+
+void SetNoteShown(Note n, bool shown)
+{
+    if (shown) g_mutedNotes &= ~(1u << (int)n);
+    else g_mutedNotes |= (1u << (int)n);
+}
+
 namespace
 {
 
@@ -710,7 +723,8 @@ void Client::worker(std::string host)
 
         state = State::Connected;
         connectCount++;
-        pushMessage(Tr("client.connected").arg(QString::fromUtf8(hello.name), QString::fromStdString(host)).toStdString());
+        if (NoteShown(Note::Connection))
+            pushMessage(Tr("client.connected").arg(QString::fromUtf8(hello.name), QString::fromStdString(host)).toStdString());
         everConnected = true;
         SetStatusText(Tr3DS("status.connected"));
         {
@@ -796,7 +810,7 @@ void Client::worker(std::string host)
             lastInput = InputSnapshot();
         }
         if (!stopRequested && everConnected)
-            pushMessage(TrS("client.lost"));
+            if (NoteShown(Note::Connection)) pushMessage(TrS("client.lost"));
     }
 
     state = State::Disconnected;

@@ -743,7 +743,7 @@ std::string Session::CopyRom(const std::string& remotePath, uint64_t size, const
             .arg(mmss(secs), q(human((uint64_t)(moved / (secs > 0 ? secs : 1)))),
                  q(human((uint64_t)(wireDone / (secs > 0 ? secs : 1)))))
             .arg(moved > 0 ? (int)(100 - wireDone * 100 / moved) : 0).toStdString();
-        c.PostMessage(summary);
+        c.PostMessage(summary, Note::Rom);
         Log(summary + " (" + romName + ", " + human(size) +
             (startOff ? ", fortgesetzt ab " + human(startOff) : std::string()) +
             (SkipPadding ? ", Füllbereich überspringen an" : "") + ")");
@@ -904,7 +904,7 @@ void Session::uploader()
 
         if (!announcedRetry)
         {
-            Link::Get().PostMessage(TrS("save.uploading"));
+            Link::Get().PostMessage(TrS("save.uploading"), Note::Save);
             Link::Get().SetStatusText(Link::Get().Tr3DS("save.uploading3ds"));
         }
         auto u0 = std::chrono::steady_clock::now();
@@ -926,7 +926,7 @@ void Session::uploader()
         if (ok)
         {
             SetSyncedHash(game, hashOf(data.data(), data.size()));
-            Link::Get().PostMessage(TrS("save.done"));
+            Link::Get().PostMessage(TrS("save.done"), Note::Save);
             Link::Get().SetStatusText(q(Link::Get().Tr3DS("save.done3ds")).arg(QDateTime::currentDateTime().toString("HH:mm")).toStdString());
             announcedRetry = false;
         }
