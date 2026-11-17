@@ -2039,21 +2039,42 @@ static void setLine(int row, const char* fmt, ...)
 
 #define CONFIG_PATH "sdmc:/3ds/melonDS-Link.cfg"
 
+/* Screen backlights. The gsp::Lcd service is opened only for the moment of
+   switching: keeping a session open all the time left the HOME menu without
+   one - the 3DS froze when HOME was pressed. */
+static void lcdBacklight(u32 screen, bool on)
+{
+    if (R_FAILED(gspLcdInit())) return;
+    if (on) GSPLCD_PowerOnBacklight(screen);
+    else GSPLCD_PowerOffBacklight(screen);
+    gspLcdExit();
+}
+
 static bool g_bottomDark = false;
 static void setBottomBacklight(bool on)
 {
     if (on == !g_bottomDark) return;
-    if (on) GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_BOTTOM);
-    else GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_BOTTOM);
+    lcdBacklight(GSPLCD_SCREEN_BOTTOM, on);
     g_bottomDark = !on;
 }
 
 static void setTopBacklight(bool on)
 {
     if (on == !g_topOff) return;
-    if (on) GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
-    else GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
+    lcdBacklight(GSPLCD_SCREEN_TOP, on);
     g_topOff = !on;
+}
+
+/* going to the HOME menu (or closing): both screens on, the main loop
+   switches them off again afterwards if the settings say so */
+static void aptHookFunc(APT_HookType hook, void* param)
+{
+    (void)param;
+    if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONEXIT)
+    {
+        setTopBacklight(true);
+        setBottomBacklight(true);
+    }
 }
 
 static void loadConfig(void)
@@ -2110,7 +2131,8 @@ int main(int argc, char** argv)
     irrstInit();   /* C-stick / ZL / ZR on New 3DS */
     LightLock_Init(&g_lock);
     LightLock_Init(&g_ackLock);
-    gspLcdInit();   /* top screen backlight on/off */
+    static aptHookCookie hookCookie;
+    aptHook(&hookCookie, aptHookFunc, NULL);
     loadConfig();
     loadLanguageFiles();
     applyLanguage();
@@ -2132,7 +2154,6 @@ int main(int argc, char** argv)
             gspWaitForVBlank();
         }
         irrstExit();
-        gspLcdExit();
         gfxExit();
         return 0;
     }
@@ -2707,7 +2728,7 @@ int main(int argc, char** argv)
     irrstExit();
     setTopBacklight(true);
     setBottomBacklight(true);
-    gspLcdExit();
+    aptUnhook(&hookCookie);
     gfxExit();
     return 0;
 }
