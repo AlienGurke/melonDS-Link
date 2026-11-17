@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        10u
+#define LINK_VERSION        11u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -70,6 +70,10 @@ enum LinkCommand
                                 full reading for the rest of the stream. */
     LINK_CMD_SDTEST     = 19,/* in: folder (empty = the saves folder)  out: text with
                                 timings of different ways to write to the SD card */
+    LINK_CMD_ASK        = 20,/* in: u32 id + UTF-8 text: lines separated by '\n', the
+                                last two lines are the labels for A and B. Shown on
+                                the 3DS; the answer comes as LINK_EVENT_ANSWER.
+                                Only the id (no text) takes the question away. */
 };
 
 /* send settings of the 3DS (0 = keep the current value) */
@@ -89,6 +93,9 @@ typedef struct LinkTuning
 enum LinkEventType
 {
     LINK_EVENT_LAUNCH = 1,   /* the user picked a game on the 3DS */
+    LINK_EVENT_ANSWER = 2,   /* answer to LINK_CMD_ASK: romSize = id, reserved = 0 (A) / 1 (B) */
+    LINK_EVENT_SCREENSHOT = 3, /* the user asked for a screenshot on the 3DS */
+    LINK_EVENT_LANGUAGE = 4, /* the 3DS app switched language; the code ("de") as the ROM path */
 };
 
 enum LinkStatus
@@ -124,6 +131,7 @@ typedef struct LINK_PACKED LinkHelloResp
     uint16_t udpPort;
     uint16_t isNew3DS;
     char     name[24];
+    char     lang[4];        /* language of the 3DS app ("en", "de") */
 } LinkHelloResp;
 
 typedef struct LINK_PACKED LinkStatResp

@@ -3,6 +3,7 @@
 */
 
 #include "LinkClient.h"
+#include "LinkLang.h"
 #include "lz4/lz4.h"
 
 #include <algorithm>
@@ -487,6 +488,25 @@ void Client::pollEvents()
     LinkEvent ev;
     memcpy(&ev, out.data(), sizeof(ev));
     if (out.size() < sizeof(ev) + ev.romPathLen + ev.savePathLen) return;
+    if (ev.type == LINK_EVENT_ANSWER)
+    {
+        std::lock_guard<std::mutex> lock(eventMutex);
+        answerId = (uint32_t)ev.romSize;
+        answerChoice = (int)ev.reserved;
+        haveAnswer = true;
+        return;
+    }
+    if (ev.type == LINK_EVENT_LANGUAGE)
+    {
+        std::lock_guard<std::mutex> lock(eventMutex);
+        remoteLang.assign((const char*)out.data() + sizeof(ev), std::min<size_t>(ev.romPathLen, 3));
+        return;
+    }
+    if (ev.type == LINK_EVENT_SCREENSHOT)
+    {
+        screenshotWanted = true;
+        return;
+    }
     if (ev.type != LINK_EVENT_LAUNCH) return;
 
     LaunchRequest r;
@@ -496,6 +516,39 @@ void Client::pollEvents()
     std::lock_guard<std::mutex> lock(launchMutex);
     pendingLaunch = r;
     haveLaunch = true;
+}
+
+bool Client::Ask(uint32_t id, const std::string& text)
+{
+    {
+        std::lock_guard<std::mutex> lock(eventMutex);
+        if (haveAnswer && answerId == id) haveAnswer = false;
+    }
+    std::vector<uint8_t> payload(4 + text.size());
+    memcpy(payload.data(), &id, 4);
+    memcpy(payload.data() + 4, text.data(), text.size());
+    uint16_t status;
+    return Request(LINK_CMD_ASK, payload.data(), (uint32_t)payload.size(), status) && status == LINK_OK;
+}
+
+void Client::CancelAsk(uint32_t id)
+{
+    uint16_t status;
+    Request(LINK_CMD_ASK, &id, 4, status);
+}
+
+bool Client::TakeAnswer(uint32_t id, int& choice)
+{
+    std::lock_guard<std::mutex> lock(eventMutex);
+    if (!haveAnswer || answerId != id) return false;
+    choice = answerChoice;
+    haveAnswer = false;
+    return true;
+}
+
+std::string Client::Tr3DS(const char* key)
+{
+    return TrIn(RemoteLanguage(), key).toStdString();
 }
 
 bool Client::SetStatusText(const std::string& text)
@@ -509,7 +562,7 @@ void Client::worker(std::string host)
     sockaddr_in tcpAddr = {}, udpAddr = {};
     if (!resolve(host, LINK_TCP_PORT, tcpAddr))
     {
-        pushMessage("3DS Link: Adresse ungültig: " + host);
+        pushMessage(Tr("client.badaddr").arg(QString::fromStdString(host)).toStdString());
         state = State::Disconnected;
         return;
     }
@@ -554,20 +607,26 @@ void Client::worker(std::string host)
         uint32_t ver = LINK_VERSION;
         uint16_t status = 0;
         std::vector<uint8_t> resp;
-        if (!Request(LINK_CMD_HELLO, &ver, sizeof(ver), status, &resp) ||
-            resp.size() < sizeof(LinkHelloResp))
+        bool helloOk = Request(LINK_CMD_HELLO, &ver, sizeof(ver), status, &resp);
+        if (helloOk && status == LINK_ERR_VERSION)
+        {
+            // checked first: an older app answers with a shorter HELLO
+            pushMessage(TrS("client.version"));
+            closeSockets();
+            state = State::Disconnected;
+            return;
+        }
+        if (!helloOk || resp.size() < sizeof(LinkHelloResp))
         {
             closeSockets();
             continue;
         }
         LinkHelloResp hello;
         memcpy(&hello, resp.data(), sizeof(hello));
-        if (status == LINK_ERR_VERSION)
         {
-            pushMessage("3DS Link: Versionen passen nicht zusammen - bitte beide Programme aktualisieren");
-            closeSockets();
-            state = State::Disconnected;
-            return;
+            std::lock_guard<std::mutex> lock(eventMutex);
+            remoteLang.assign(hello.lang, strnlen(hello.lang, sizeof(hello.lang)));
+            if (remoteLang.empty()) remoteLang = "en";
         }
 
         // --- UDP input stream ---
@@ -599,9 +658,9 @@ void Client::worker(std::string host)
 
         state = State::Connected;
         connectCount++;
-        pushMessage(std::string("3DS Link: verbunden mit ") + hello.name + " (" + host + ")");
+        pushMessage(Tr("client.connected").arg(QString::fromUtf8(hello.name), QString::fromStdString(host)).toStdString());
         everConnected = true;
-        SetStatusText("melonDS verbunden");
+        SetStatusText(Tr3DS("status.connected"));
         {
             LinkTuning t;
             {
@@ -680,7 +739,7 @@ void Client::worker(std::string host)
             lastInput = InputSnapshot();
         }
         if (!stopRequested && everConnected)
-            pushMessage("3DS Link: Verbindung verloren - versuche neu zu verbinden...");
+            pushMessage(TrS("client.lost"));
     }
 
     state = State::Disconnected;

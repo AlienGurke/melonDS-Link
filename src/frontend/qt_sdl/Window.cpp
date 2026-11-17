@@ -80,6 +80,7 @@
 #include "LinkClient.h"
 #include "LinkSession.h"
 #include "LinkRomDialog.h"
+#include "LinkLang.h"
 #include "SaveManager.h"
 
 using namespace melonDS;
@@ -650,27 +651,81 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
         }
         {
             QMenu * menu = menubar->addMenu("3DS Link");
+            static bool langReady = false;
+            if (!langReady)
+            {
+                langReady = true;
+                std::string lang = globalCfg.GetString("Link.Language");
+                Link::InitLanguages(lang.empty() ? "en" : lang);
+            }
 
-            actLinkConnect = menu->addAction("Mit 3DS verbinden...");
+            actLinkConnect = menu->addAction("");
             connect(actLinkConnect, &QAction::triggered, this, &MainWindow::onLinkConnect);
 
-            actLinkDisconnect = menu->addAction("Trennen");
+            actLinkDisconnect = menu->addAction("");
+            linkTexts.push_back({actLinkDisconnect, "menu.disconnect"});
             connect(actLinkDisconnect, &QAction::triggered, this, &MainWindow::onLinkDisconnect);
 
-            QAction* actLinkSpeed = menu->addAction("WLAN-Geschwindigkeit testen und optimieren...");
+            menu->addSeparator();
+            QAction* actLinkRoms = menu->addAction("");
+            linkTexts.push_back({actLinkRoms, "menu.roms"});
+            connect(actLinkRoms, &QAction::triggered, this, [this] { LinkRomDialog::openDlg(this); });
+            QAction* actLinkFolder = menu->addAction("");
+            linkTexts.push_back({actLinkFolder, "menu.folder"});
+            connect(actLinkFolder, &QAction::triggered, this, []
+            {
+                QString dir = QString::fromStdString(Link::Session::BaseDir());
+                QDir().mkpath(dir + "/Backups");
+                QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+            });
+            QAction* actLinkShots = menu->addAction("");
+            linkTexts.push_back({actLinkShots, "menu.screenshots"});
+            connect(actLinkShots, &QAction::triggered, this, []
+            {
+                QString dir = QString::fromStdString(Link::Session::ScreenshotDir());
+                QDir().mkpath(dir);
+                QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+            });
+
+            menu->addSeparator();
+            QMenu* langMenu = menu->addMenu("");
+            linkMenus.push_back({langMenu, "menu.language"});
+            connect(langMenu, &QMenu::aboutToShow, this, [this, langMenu]
+            {
+                langMenu->clear();
+                auto* group = new QActionGroup(langMenu);
+                for (const auto& [code, name] : Link::Languages())
+                {
+                    QAction* a = langMenu->addAction(name);
+                    a->setCheckable(true);
+                    a->setChecked(code == Link::Language());
+                    group->addAction(a);
+                    std::string c = code;
+                    connect(a, &QAction::triggered, this, [this, c]
+                    {
+                        Link::SetLanguage(c);
+                        globalCfg.SetString("Link.Language", c);
+                        Config::Save();
+                        retranslateLink();
+                    });
+                }
+            });
+
+            QMenu* debugMenu = menu->addMenu("");
+            linkMenus.push_back({debugMenu, "menu.debug"});
+            QAction* actLinkSpeed = debugMenu->addAction("");
+            linkTexts.push_back({actLinkSpeed, "menu.speedtest"});
             connect(actLinkSpeed, &QAction::triggered, this, [this]
             {
                 if (Link::Get().GetState() != Link::State::Connected)
                 {
-                    QMessageBox::information(this, "melonDS Link", "Zuerst mit dem 3DS verbinden.");
+                    QMessageBox::information(this, "melonDS Link", Link::Tr("connect.first"));
                     return;
                 }
                 if (QMessageBox::question(this, "melonDS Link",
-                        "Der 3DS sendet jetzt mehrmals je 8 MB Testdaten mit verschiedenen Einstellungen "
-                        "(dauert ca. 1-2 Minuten). Die schnellste Einstellung wird danach automatisch verwendet.\n\n"
-                        "Starten?") != QMessageBox::Yes)
+                        Link::Tr("test.askspeed")) != QMessageBox::Yes)
                     return;
-                emuInstance->osdAddMessage(0, "3DS Link: WLAN-Test laeuft...");
+                emuInstance->osdAddMessage(0, "%s", Link::TrS("test.speedrunning").c_str());
                 std::thread([this]
                 {
                     struct Cfg { uint32_t buf, piece, sleep; bool block; };
@@ -694,11 +749,11 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         t.flags = LINK_TUNE_SET | (c.block ? LINK_TUNE_BLOCKING : 0);
                         double rate = 0;
                         bool ok = Link::Get().SpeedTest(t, rate);
-                        char line[160];
-                        snprintf(line, sizeof(line), "%-12s Puffer %3uK  Stueck %3uK:  %s",
-                                 c.block ? "blockierend" : "abfragend", c.buf / 1024, c.piece / 1024,
-                                 ok ? (std::to_string((int)(rate / 1024)) + " KB/s").c_str() : "Fehler");
-                        table += QString(line) + "\n";
+                        std::string line = Link::Tr("test.speedline")
+                            .arg(Link::Tr(c.block ? "test.blocking" : "test.polling"), -12)
+                            .arg(c.buf / 1024, 3).arg(c.piece / 1024, 3)
+                            .arg(ok ? QString::number((int)(rate / 1024)) + " KB/s" : Link::Tr("test.error")).toStdString();
+                        table += QString::fromStdString(line) + "\n";
                         Link::Session::Log(std::string("  ") + line);
                         Link::Get().PostMessage(std::string("3DS Link: ") + line);
                         if (ok && rate > bestRate) { bestRate = rate; best = c; }
@@ -720,12 +775,11 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         t.flags = LINK_TUNE_SET | (best.block ? LINK_TUNE_BLOCKING : 0);
                         Link::Get().SetTuning(t);
                         Link::Get().SetDefaultTuning(t);
-                        char sum[200];
-                        snprintf(sum, sizeof(sum), "Beste Einstellung: %s, Puffer %uK, Stueck %uK -> %d KB/s (wird ab jetzt verwendet)",
-                                 best.block ? "blockierend" : "abfragend", best.buf / 1024, best.piece / 1024, (int)(bestRate / 1024));
-                        Link::Session::Log(sum);
-                        text = "Ergebnisse (3DS -> PC, reine WLAN-Geschwindigkeit):\n\n" + table + "\n" + QString(sum) +
-                               "\n\nDie Werte schwanken je nach WLAN-Auslastung stark; ein Test ist nur eine Momentaufnahme.\nAlles steht auch in melonDS-Link\\link-log.txt.";
+                        QString sum = Link::Tr("test.best")
+                            .arg(Link::Tr(best.block ? "test.blocking" : "test.polling"))
+                            .arg(best.buf / 1024).arg(best.piece / 1024).arg((int)(bestRate / 1024));
+                        Link::Session::Log(sum.toStdString());
+                        text = Link::Tr("test.results") + "\n\n" + table + "\n" + sum + "\n\n" + Link::Tr("test.vary");
                         QMetaObject::invokeMethod(this, [this, best]
                         {
                             globalCfg.SetInt("Link.SendBuf", (int)best.buf);
@@ -736,7 +790,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         }, Qt::QueuedConnection);
                     }
                     else
-                        text = "Test fehlgeschlagen. Ist auf dem 3DS die neueste melonDS-Link-App?";
+                        text = Link::Tr("test.failed");
                     QMetaObject::invokeMethod(this, [this, text]
                     {
                         QMessageBox box(QMessageBox::Information, "melonDS Link", text, QMessageBox::Ok, this);
@@ -746,41 +800,39 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 }).detach();
             });
 
-            QAction* actLinkSd = menu->addAction("SD-Karte des 3DS testen...");
+            QAction* actLinkSd = debugMenu->addAction("");
+            linkTexts.push_back({actLinkSd, "menu.sdtest"});
             connect(actLinkSd, &QAction::triggered, this, [this]
             {
                 if (Link::Get().GetState() != Link::State::Connected)
                 {
-                    QMessageBox::information(this, "melonDS Link", "Zuerst mit dem 3DS verbinden.");
+                    QMessageBox::information(this, "melonDS Link", Link::Tr("connect.first"));
                     return;
                 }
-                emuInstance->osdAddMessage(0, "3DS Link: SD-Karten-Test laeuft (bis zu einer Minute)...");
+                emuInstance->osdAddMessage(0, "%s", Link::TrS("test.sdrunning").c_str());
                 std::thread([this]
                 {
                     uint16_t status = 0;
                     std::vector<uint8_t> out;
                     bool ok = Link::Get().Request(LINK_CMD_SDTEST, nullptr, 0, status, &out) && status == LINK_OK;
                     std::string res = ok ? std::string(out.begin(), out.end())
-                                         : std::string("Test fehlgeschlagen - ist die neueste 3DS-App drauf?");
+                                         : Link::TrS("test.failed");
                     Link::Session::Log("SD-Test: " + res);
                     QString text = QString::fromStdString(res);
                     text.replace(": ", ":\n").replace(", ", "\n");
                     QMetaObject::invokeMethod(this, [this, text]
                     {
-                        QMessageBox::information(this, "melonDS Link - SD-Karte", text +
-                            "\n\n(steht auch in melonDS-Link\\link-log.txt)");
+                        QMessageBox::information(this, Link::Tr("test.sdtitle"), text + "\n\n" + Link::Tr("test.inlog"));
                     }, Qt::QueuedConnection);
                 }).detach();
             });
 
-            menu->addSeparator();
-            QAction* actLinkRoms = menu->addAction("ROMs vom 3DS (vorab kopieren)...");
-            connect(actLinkRoms, &QAction::triggered, this, [this] { LinkRomDialog::openDlg(this); });
-            QAction* actLinkFolder = menu->addAction("Backup- und ROM-Ordner oeffnen");
-            connect(actLinkFolder, &QAction::triggered, this, []
+            QAction* actLinkDebugFolder = debugMenu->addAction("");
+            linkTexts.push_back({actLinkDebugFolder, "menu.debugfolder"});
+            connect(actLinkDebugFolder, &QAction::triggered, this, []
             {
-                QString dir = QString::fromStdString(Link::Session::BaseDir());
-                QDir().mkpath(dir + "/Backups");
+                QString dir = QString::fromStdString(Link::Session::DebugDir());
+                QDir().mkpath(dir);
                 QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
             });
 
@@ -808,6 +860,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     Link::Get().SetDefaultTuning(t);
                 }
                 Link::Session::SkipPadding = globalCfg.GetBool("Link.SkipPadding");
+                Link::Session::EmuActive = [this] { return emuThread->emuIsActive(); };
                 linkTimer = new QTimer(this);
                 connect(linkTimer, &QTimer::timeout, this, &MainWindow::onLinkTick);
                 linkTimer->start(200);
@@ -815,15 +868,9 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
             connect(menu, &QMenu::aboutToShow, this, [this]
             {
-                auto st = Link::Get().GetState();
-                actLinkDisconnect->setEnabled(st != Link::State::Disconnected);
-                if (st == Link::State::Connected)
-                    actLinkConnect->setText("Verbunden mit " + QString::fromStdString(Link::Get().GetHost()) + " - neu verbinden...");
-                else if (st == Link::State::Connecting)
-                    actLinkConnect->setText("Verbinde mit " + QString::fromStdString(Link::Get().GetHost()) + "... - andere IP...");
-                else
-                    actLinkConnect->setText("Mit 3DS verbinden...");
+                retranslateLink();
             });
+            retranslateLink();
         }
         {
             QMenu * menu = menubar->addMenu("Help");
@@ -1955,12 +2002,23 @@ void MainWindow::onLANStartClient()
     LANStartClientDialog::openDlg(this);
 }
 
+void MainWindow::retranslateLink()
+{
+    for (auto& [a, key] : linkTexts) a->setText(Link::Tr(key));
+    for (auto& [m, key] : linkMenus) m->setTitle(Link::Tr(key));
+    auto st = Link::Get().GetState();
+    actLinkDisconnect->setEnabled(st != Link::State::Disconnected);
+    QString host = QString::fromStdString(Link::Get().GetHost());
+    if (st == Link::State::Connected) actLinkConnect->setText(Link::Tr("menu.connected").arg(host));
+    else if (st == Link::State::Connecting) actLinkConnect->setText(Link::Tr("menu.connecting").arg(host));
+    else actLinkConnect->setText(Link::Tr("menu.connect"));
+}
+
 void MainWindow::onLinkConnect()
 {
     QString last = globalCfg.GetQString("Link.Host");
     bool ok = false;
-    QString host = QInputDialog::getText(this, "melonDS Link",
-        "IP-Adresse des 3DS (steht oben auf dem 3DS-Bildschirm in der melonDS-Link-App):",
+    QString host = QInputDialog::getText(this, "melonDS Link", Link::Tr("connect.prompt"),
         QLineEdit::Normal, last, &ok).trimmed();
     if (!ok || host.isEmpty()) return;
 
@@ -1968,7 +2026,7 @@ void MainWindow::onLinkConnect()
     Config::Save();
 
     Link::Get().Connect(host.toStdString());
-    emuInstance->osdAddMessage(0, "3DS Link: verbinde mit %s...", host.toStdString().c_str());
+    emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
 }
 
 void MainWindow::onLinkTick()
@@ -1982,6 +2040,13 @@ void MainWindow::onLinkTick()
     {
         syncedConnection = conn;
         Link::Session::Get().RequestOnPcSync();
+    }
+
+    // a screenshot asked for on the 3DS: the emulator thread takes it while a
+    // game runs; without one there is nothing to take
+    if (!emuThread->emuIsActive() && Link::Get().TakeScreenshotRequest())
+    {
+        std::thread([] { Link::Get().SetStatusText(Link::Get().Tr3DS("shot.nogame")); }).detach();
     }
 
     std::string rom = Link::Session::Get().Tick(this, localCfg.GetString("SaveFilePath"));
@@ -2006,7 +2071,7 @@ void MainWindow::onLinkTick()
 void MainWindow::onLinkDisconnect()
 {
     Link::Get().Disconnect();
-    emuInstance->osdAddMessage(0, "3DS Link: getrennt");
+    emuInstance->osdAddMessage(0, "%s", Link::TrS("connect.disconnected").c_str());
 }
 
 void MainWindow::onNPStartHost()

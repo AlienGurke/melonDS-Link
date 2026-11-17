@@ -266,6 +266,9 @@ public:
     QAction* actLinkConnect;
     QAction* actLinkDisconnect;
     QTimer* linkTimer = nullptr;
+    std::vector<std::pair<QAction*, const char*>> linkTexts;
+    std::vector<std::pair<QMenu*, const char*>> linkMenus;
+    void retranslateLink();
     QAction* actNPStartHost;
     QAction* actNPStartClient;
     QAction* actNPTest;

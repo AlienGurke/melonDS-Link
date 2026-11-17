@@ -10,6 +10,8 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QListWidget>
+#include <QDialogButtonBox>
 #include <QMessageBox>
 #include <QPointer>
 #include <QProgressBar>
@@ -22,6 +24,10 @@
 #include <chrono>
 
 #include "Config.h"
+#include "LinkLang.h"
+
+using Link::Tr;
+using Link::TrS;
 
 namespace
 {
@@ -38,6 +44,12 @@ std::string human(uint64_t bytes)
 }
 
 QString q(const std::string& s) { return QString::fromStdString(s); }
+
+QString mmss(double secs)
+{
+    int s = (int)secs;
+    return QString("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QChar('0'));
+}
 
 std::string stripExt(const std::string& name)
 {
@@ -57,19 +69,17 @@ void LinkRomDialog::openDlg(QWidget* parent)
 
 LinkRomDialog::LinkRomDialog(QWidget* parent) : QDialog(parent)
 {
-    setWindowTitle("melonDS Link - ROMs vom 3DS");
+    setWindowTitle(Tr("roms.title"));
     setAttribute(Qt::WA_DeleteOnClose);
     resize(720, 520);
 
     auto* lay = new QVBoxLayout(this);
-    auto* intro = new QLabel("Hier kannst du Spiele vorab auf den PC kopieren. Danach starten sie sofort, "
-                             "wenn du sie auf dem 3DS auswaehlst. Auf dem 3DS steht bei kopierten Spielen \"PC\".\n"
-                             "Waehrend des Kopierens bleibt der untere 3DS-Bildschirm stehen - am besten nicht nebenbei spielen.");
+    auto* intro = new QLabel(Tr("roms.intro"));
     intro->setWordWrap(true);
     lay->addWidget(intro);
 
     table = new QTableWidget(0, 3, this);
-    table->setHorizontalHeaderLabels({"Spiel", "Groesse", "Status"});
+    table->setHorizontalHeaderLabels({Tr("roms.col.game"), Tr("roms.col.size"), Tr("roms.col.status")});
     table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -89,8 +99,7 @@ LinkRomDialog::LinkRomDialog(QWidget* parent) : QDialog(parent)
     bar->setVisible(false);
     lay->addWidget(bar);
 
-    chkSkip = new QCheckBox("Fuellbereich ueberspringen (schneller): hinter den Spieldaten liest der 3DS nur Stichproben "
-                            "statt alles. Findet er dort doch etwas, liest er ab da wieder alles.", this);
+    chkSkip = new QCheckBox(Tr("roms.skip"), this);
     chkSkip->setChecked(Link::Session::SkipPadding.load());
     connect(chkSkip, &QCheckBox::toggled, this, [](bool on)
     {
@@ -102,16 +111,18 @@ LinkRomDialog::LinkRomDialog(QWidget* parent) : QDialog(parent)
     lay->addWidget(chkSkip);
 
     auto* buttons = new QHBoxLayout();
-    btnRefresh = new QPushButton("Aktualisieren", this);
-    btnCopySel = new QPushButton("Angehakte kopieren", this);
-    btnCopyAll = new QPushButton("Alle fehlenden kopieren", this);
-    btnDelete = new QPushButton("Angehakte vom PC loeschen...", this);
-    btnStop = new QPushButton("Anhalten", this);
-    btnClose = new QPushButton("Schliessen", this);
+    btnRefresh = new QPushButton(Tr("roms.refresh"), this);
+    btnCopySel = new QPushButton(Tr("roms.copysel"), this);
+    btnCopyAll = new QPushButton(Tr("roms.copyall"), this);
+    btnDelete = new QPushButton(Tr("roms.delete"), this);
+    btnBackups = new QPushButton(Tr("roms.backups"), this);
+    btnStop = new QPushButton(Tr("roms.stop"), this);
+    btnClose = new QPushButton(Tr("roms.close"), this);
     buttons->addWidget(btnRefresh);
     buttons->addWidget(btnCopySel);
     buttons->addWidget(btnCopyAll);
     buttons->addWidget(btnDelete);
+    buttons->addWidget(btnBackups);
     buttons->addWidget(btnStop);
     buttons->addStretch(1);
     buttons->addWidget(btnClose);
@@ -121,13 +132,13 @@ LinkRomDialog::LinkRomDialog(QWidget* parent) : QDialog(parent)
     connect(btnCopySel, &QPushButton::clicked, this, [this] { startCopy(true); });
     connect(btnCopyAll, &QPushButton::clicked, this, [this] { startCopy(false); });
     connect(btnDelete, &QPushButton::clicked, this, [this] { deleteTicked(); });
+    connect(btnBackups, &QPushButton::clicked, this, [this] { showBackups(); });
     connect(btnStop, &QPushButton::clicked, this, [this]
     {
         stopReq = true;
         btnStop->setEnabled(false);
         std::lock_guard<std::mutex> lock(m);
-        label = "Wird angehalten (nach dem aktuellen Abschnitt, ein paar Sekunden)...\n"
-                "Der bisher kopierte Teil bleibt erhalten und wird beim naechsten Mal fortgesetzt.";
+        label = TrS("roms.stopping");
     });
     connect(btnClose, &QPushButton::clicked, this, [this] { close(); });
 
@@ -160,7 +171,7 @@ void LinkRomDialog::closeEvent(QCloseEvent* event)
         btnStop->setEnabled(false);
         {
             std::lock_guard<std::mutex> lock(m);
-            label = "Wird angehalten und dann geschlossen...";
+            label = TrS("roms.stopclose");
         }
         event->ignore();
         return;
@@ -176,6 +187,7 @@ void LinkRomDialog::setBusy(bool b)
     btnCopySel->setEnabled(!b && connected);
     btnCopyAll->setEnabled(!b && connected);
     btnDelete->setEnabled(!b);
+    btnBackups->setEnabled(!b);
     btnStop->setEnabled(b);
     bar->setVisible(b);
 }
@@ -186,7 +198,7 @@ void LinkRomDialog::refresh()
     joinWorker();
     if (Link::Get().GetState() != Link::State::Connected)
     {
-        summary->setText("Nicht mit dem 3DS verbunden (3DS Link > Mit 3DS verbinden).");
+        summary->setText(Tr("roms.notconnected"));
         info->clear();
         setBusy(false);
         return;
@@ -195,7 +207,7 @@ void LinkRomDialog::refresh()
     workerDone = false;
     {
         std::lock_guard<std::mutex> lock(m);
-        label = "Lese die Spieleliste vom 3DS...";
+        label = TrS("roms.reading");
         result.clear();
     }
     setBusy(true);
@@ -215,7 +227,7 @@ void LinkRomDialog::refresh()
                 label.clear();
             }
             else
-                result = "Die Spieleliste konnte nicht gelesen werden. Ist auf dem 3DS die neueste melonDS-Link-App?";
+                result = TrS("roms.readfail");
         }
         workerDone = true;
     });
@@ -255,17 +267,17 @@ void LinkRomDialog::fillTable()
         table->setItem(r, 1, size);
 
         QString st;
-        if (have) st = QString::fromUtf8("\xE2\x9C\x93 auf dem PC");
-        else if (part > 0) st = QString("angefangen (%1%)").arg((int)(part * 100 / rom.size));
-        else st = "fehlt";
+        if (have) st = Tr("roms.onpc");
+        else if (part > 0) st = Tr("roms.started").arg((int)(part * 100 / rom.size));
+        else st = Tr("roms.missing");
         auto* status = new QTableWidgetItem(st);
         if (have) status->setForeground(QColor(0, 140, 0));
         table->setItem(r, 2, status);
     }
 
-    summary->setText(QString("%1 von %2 Spielen auf dem PC%3   (Ordner auf dem 3DS: %4)")
+    summary->setText(Tr("roms.summary")
         .arg(onPc).arg(roms.size())
-        .arg(missingBytes ? q(", noch " + human(missingBytes) + " zu kopieren") : QString())
+        .arg(missingBytes ? Tr("roms.left").arg(q(human(missingBytes))) : QString())
         .arg(q(romDir)));
 }
 
@@ -284,8 +296,7 @@ void LinkRomDialog::startCopy(bool onlySelected)
     }
     if (queue.empty())
     {
-        info->setText(onlySelected ? "Keins der angehakten Spiele fehlt auf dem PC."
-                                   : "Alle Spiele sind schon auf dem PC.");
+        info->setText(onlySelected ? Tr("roms.nonemissing") : Tr("roms.allthere"));
         return;
     }
 
@@ -301,7 +312,7 @@ void LinkRomDialog::startCopy(bool onlySelected)
     {
         std::lock_guard<std::mutex> lock(m);
         result.clear();
-        label = "Starte...";
+        label = TrS("roms.starting");
         barCur = 0;
         barTotal = total;
     }
@@ -332,16 +343,13 @@ void LinkRomDialog::startCopy(bool onlySelected)
                 double allSecs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
                 double allRate = allSecs > 0 ? all / allSecs : 0;
                 int eta = allRate > 0 ? (int)((total - all) / allRate) : 0;
-                char buf[400];
-                snprintf(buf, sizeof(buf),
-                         "Kopiere %d von %d: %s\n%s von %s  -  %s/s  -  WLAN %s/s, Kompression spart %d%%\n"
-                         "Insgesamt %s von %s  -  noch ca. %d:%02d",
-                         (int)i + 1, (int)queue.size(), game.c_str(), human(off).c_str(), human(size).c_str(),
-                         human((uint64_t)rate).c_str(), human((uint64_t)(secs > 0 ? wire / secs : 0)).c_str(),
-                         off > part ? (int)(100 - wire * 100 / (off - part)) : 0,
-                         human(all).c_str(), human(total).c_str(), eta / 60, eta % 60);
+                QString text = Tr("roms.progress")
+                    .arg(QString::number(i + 1), QString::number(queue.size()), q(game), q(human(off)), q(human(size)),
+                         q(human((uint64_t)rate)), q(human((uint64_t)(secs > 0 ? wire / secs : 0))),
+                         QString::number(off > part ? (int)(100 - wire * 100 / (off - part)) : 0), q(human(all)))
+                    .arg(q(human(total)), mmss(eta));
                 std::lock_guard<std::mutex> lock(m);
-                if (!stopReq) label = buf;
+                if (!stopReq) label = text.toStdString();
                 barCur = all;
                 return true;
             };
@@ -355,17 +363,15 @@ void LinkRomDialog::startCopy(bool onlySelected)
 
         std::string res;
         if (s.LaunchCount() != launches)
-            res = "Angehalten, weil auf dem 3DS ein Spiel gestartet wurde. Der bisher kopierte Teil bleibt erhalten.";
+            res = TrS("roms.stoppedlaunch");
         else if (stopReq)
-            res = "Angehalten. Der bisher kopierte Teil bleibt erhalten und wird beim naechsten Mal fortgesetzt.";
+            res = TrS("roms.stopped");
         else if (!err.empty())
             res = err;
         else
         {
-            int secs = (int)std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            char buf[160];
-            snprintf(buf, sizeof(buf), "Fertig: %d Spiel(e) kopiert in %d:%02d.", copied, secs / 60, secs % 60);
-            res = buf;
+            double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            res = Tr("roms.done").arg(copied).arg(mmss(secs)).toStdString();
         }
         Link::Session::Log("Vorladen beendet: " + res);
         {
@@ -395,16 +401,14 @@ void LinkRomDialog::deleteTicked()
     }
     if (sel.empty())
     {
-        info->setText("Keins der angehakten Spiele liegt auf dem PC.");
+        info->setText(Tr("roms.nonetodelete"));
         return;
     }
 
     QMessageBox box(QMessageBox::Question, "melonDS Link",
-        QString("%1 Spiel(e) vom PC loeschen (%2)?\n\n"
-                "Auf dem 3DS bleibt alles, auch die Spielstaende. Beim naechsten Start wird die ROM "
-                "einfach wieder kopiert.").arg(sel.size()).arg(q(human(bytes))),
+        Tr("roms.askdelete").arg(sel.size()).arg(q(human(bytes))),
         QMessageBox::Yes | QMessageBox::No, this);
-    auto* withBackups = new QCheckBox("Auch die Spielstand-Backups dieser Spiele am PC loeschen");
+    auto* withBackups = new QCheckBox(Tr("roms.delbackups"));
     box.setCheckBox(withBackups);
     box.setDefaultButton(QMessageBox::No);
     if (box.exec() != QMessageBox::Yes) return;
@@ -418,13 +422,77 @@ void LinkRomDialog::deleteTicked()
     }
     for (int r = 0; r < table->rowCount(); r++) table->item(r, 0)->setCheckState(Qt::Unchecked);
     fillTable();
-    std::string msg = std::to_string(done) + " Spiel(e) vom PC geloescht.";
-    if (!skipped.empty()) msg += " Nicht geloescht (laeuft gerade oder wird kopiert): " + skipped;
+    std::string msg = Tr("roms.deleted").arg(done).toStdString();
+    if (!skipped.empty()) msg += Tr("roms.notdeleted").arg(q(skipped)).toStdString();
     {
         std::lock_guard<std::mutex> lock(m);
         result = msg;
     }
     info->setText(q(msg));
+}
+
+void LinkRomDialog::showBackups()
+{
+    if (busy) return;
+    std::string romName;
+    int count = 0;
+    for (int r = 0; r < table->rowCount() && r < (int)roms.size(); r++)
+        if (table->item(r, 0)->checkState() == Qt::Checked) { romName = roms[r].name; count++; }
+    if (count != 1)
+    {
+        info->setText(Tr("roms.pickone"));
+        return;
+    }
+    const std::string game = stripExt(romName);
+    auto list = Link::Session::Backups(game);
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(Tr("bak.title").arg(q(game)));
+    dlg.resize(480, 360);
+    auto* lay = new QVBoxLayout(&dlg);
+    auto* text = new QLabel(list.empty() ? Tr("bak.none") : Tr("bak.intro"), &dlg);
+    text->setWordWrap(true);
+    lay->addWidget(text);
+    auto* lw = new QListWidget(&dlg);
+    for (const auto& b : list) lw->addItem(q(b.when + "   (" + human(b.size) + ")"));
+    if (!list.empty()) lw->setCurrentRow(0);
+    lay->addWidget(lw, 1);
+    auto* bb = new QDialogButtonBox(&dlg);
+    QPushButton* restore = bb->addButton(Tr("bak.restore"), QDialogButtonBox::AcceptRole);
+    bb->addButton(Tr("roms.close"), QDialogButtonBox::RejectRole);
+    restore->setEnabled(!list.empty() && Link::Get().GetState() == Link::State::Connected);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(lw, &QListWidget::itemDoubleClicked, &dlg, &QDialog::accept);
+    lay->addWidget(bb);
+    if (dlg.exec() != QDialog::Accepted || lw->currentRow() < 0 || list.empty()) return;
+    const auto chosen = list[lw->currentRow()];
+
+    if (QMessageBox::question(this, "melonDS Link", Tr("bak.confirm").arg(q(chosen.when)),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+
+    joinWorker();
+    stopReq = false;
+    workerDone = false;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        result.clear();
+        label = TrS("bak.working");
+        barCur = 0;
+        barTotal = 0;
+    }
+    setBusy(true);
+    btnStop->setEnabled(false);
+    std::string dir = romDir;
+    worker = std::thread([this, dir, romName, chosen]
+    {
+        std::string err = Link::Session::Get().RestoreBackup(dir, romName, chosen.path);
+        std::lock_guard<std::mutex> lock(m);
+        result = err.empty() ? TrS("bak.done") : Tr("bak.failed").arg(q(err)).toStdString();
+        label.clear();
+        workerDone = true;
+    });
 }
 
 void LinkRomDialog::onTimer()

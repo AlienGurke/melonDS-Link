@@ -3,11 +3,13 @@
 */
 
 #include "LinkSession.h"
+#include "LinkLang.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstring>
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -49,6 +51,27 @@ bool writeWholeFile(const QString& path, const uint8_t* data, size_t len)
     return QFile::rename(tmp, path);
 }
 
+std::string hashOf(const uint8_t* data, size_t len)
+{
+    return QCryptographicHash::hash(QByteArrayView((const char*)data, (qsizetype)len),
+                                    QCryptographicHash::Sha1).toHex().toStdString();
+}
+
+bool readWholeFile(const QString& path, std::vector<uint8_t>& out)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    QByteArray all = f.readAll();
+    out.assign(all.begin(), all.end());
+    return true;
+}
+
+QString mmss(double secs)
+{
+    int s = (int)secs;
+    return QString("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QChar('0'));
+}
+
 std::string human(uint64_t bytes)
 {
     char buf[32];
@@ -60,6 +83,7 @@ std::string human(uint64_t bytes)
 }
 
 std::atomic<bool> Session::SkipPadding { false };
+std::function<bool()> Session::EmuActive;
 
 Session& Session::Get()
 {
@@ -98,6 +122,34 @@ std::string Session::BaseDir()
     return (emuDirectory + "/melonDS-Link").toStdString();
 }
 
+std::string Session::DebugDir()
+{
+    return BaseDir() + "/Debug";
+}
+
+std::string Session::ScreenshotDir()
+{
+    return BaseDir() + "/Screenshots";
+}
+
+// which save was on both sides the last time they were the same: tells
+// which side changed since then
+std::string Session::SyncedHash(const std::string& game)
+{
+    QFile f(q(BaseDir() + "/Sync/" + game + ".txt"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return "";
+    return QString::fromUtf8(f.readAll()).trimmed().toStdString();
+}
+
+void Session::SetSyncedHash(const std::string& game, const std::string& hash)
+{
+    QString path = q(BaseDir() + "/Sync/" + game + ".txt");
+    if (hash.empty()) { QFile::remove(path); return; }
+    QDir().mkpath(q(BaseDir() + "/Sync"));
+    QByteArray b = QByteArray::fromStdString(hash + "\n");
+    writeWholeFile(path, (const uint8_t*)b.data(), b.size());
+}
+
 std::string Session::RomCacheDir()
 {
     return BaseDir() + "/ROMs";
@@ -112,8 +164,17 @@ void Session::Log(const std::string& line)
 {
     static std::mutex m;
     std::lock_guard<std::mutex> lock(m);
-    QDir().mkpath(q(BaseDir()));
-    QFile f(q(BaseDir() + "/link-log.txt"));
+    QDir().mkpath(q(DebugDir()));
+    // the log used to be directly in melonDS-Link: move it along once
+    static bool moved = false;
+    if (!moved)
+    {
+        moved = true;
+        QString old = q(BaseDir() + "/link-log.txt");
+        if (QFile::exists(old) && !QFile::exists(q(DebugDir() + "/link-log.txt")))
+            QFile::rename(old, q(DebugDir() + "/link-log.txt"));
+    }
+    QFile f(q(DebugDir() + "/link-log.txt"));
     if (!f.open(QIODevice::Append | QIODevice::Text)) return;
     QString l = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") + "  " + q(line) + "\n";
     f.write(l.toUtf8());
@@ -123,8 +184,16 @@ void Session::WriteBackup(const std::string& gameName, const uint8_t* data, uint
 {
     QString dir = q(BackupDir(gameName));
     QDir().mkpath(dir);
-    QString stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz");
-    writeWholeFile(dir + "/" + q(gameName) + " " + stamp + ".sav", data, len);
+    // two backups in the same millisecond must not overwrite each other
+    QString file;
+    for (int i = 0; i < 50; i++)
+    {
+        QString stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss-zzz");
+        file = dir + "/" + q(gameName) + " " + stamp + ".sav";
+        if (!QFile::exists(file)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    writeWholeFile(file, data, len);
 
     // newest first (the timestamp sorts), delete everything beyond `keep`
     QStringList files = QDir(dir).entryList({"*.sav"}, QDir::Files, QDir::Name | QDir::Reversed);
@@ -187,9 +256,10 @@ std::string Session::Tick(QWidget* parent, const std::string& saveDir)
         progressTotal = 0;
         {
             std::lock_guard<std::mutex> lock(prepMutex);
-            prepLabel = "Bereite " + stripExt(fileNameOf(req.romPath)) + " vor...";
+            prepLabel = Tr("prep.preparing").arg(q(stripExt(fileNameOf(req.romPath)))).toStdString();
         }
-        dialog = new QProgressDialog(q(prepLabel), "Abbrechen", 0, 0, parent);
+        lastSaveDir = saveDir;
+        dialog = new QProgressDialog(q(prepLabel), Tr("prep.cancel"), 0, 0, parent);
         dialog->setWindowTitle("melonDS Link");
         dialog->setMinimumDuration(300);
         dialog->setAutoClose(false);
@@ -220,7 +290,7 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
     {
         bool isDir = false;
         if (!c.Stat(req.romPath, size, isDir) || size == 0)
-            return fail("ROM auf dem 3DS nicht gefunden: " + req.romPath);
+            return fail(Tr("prep.romnotfound").arg(q(req.romPath)).toStdString());
     }
     if (!IsOnPC(romName, size))
     {
@@ -232,59 +302,28 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
             uint64_t start = progressStart;
             double rate = secs > 0 ? (off - start) / secs : 0;
             int eta = rate > 0 ? (int)((total - off) / rate) : 0;
-            char label[256];
-            snprintf(label, sizeof(label), "ROM wird vom 3DS kopiert (nur beim ersten Mal):\n%s\n%s von %s  -  %s/s  -  noch ca. %d:%02d\nWLAN: %s/s, Kompression spart %d%%",
-                     game.c_str(), human(off).c_str(), human(total).c_str(), human((uint64_t)rate).c_str(), eta / 60, eta % 60,
-                     human((uint64_t)(secs > 0 ? wire / secs : 0)).c_str(),
-                     off > start ? (int)(100 - wire * 100 / (off - start)) : 0);
+            QString label = Tr("prep.copying")
+                .arg(q(game), q(human(off)), q(human(total)), q(human((uint64_t)rate)), mmss(eta),
+                     q(human((uint64_t)(secs > 0 ? wire / secs : 0))))
+                .arg(off > start ? (int)(100 - wire * 100 / (off - start)) : 0);
             {
                 std::lock_guard<std::mutex> lock(prepMutex);
-                prepLabel = label;
+                prepLabel = label.toStdString();
             }
             return true;
         };
         progressStart = PartialSize(romName);
         std::string err = CopyRom(req.romPath, size, progress);
-        if (cancel) return fail("Abgebrochen (bisher kopierter Teil bleibt erhalten)");
+        if (cancel) return fail(TrS("prep.cancelled"));
         if (!err.empty()) return fail(err);
     }
 
-    // 2) save: fetch the current one from the 3DS into the place melonDS loads it from
+    // 2) save: bring the PC copy (where melonDS loads it from) in line with the 3DS
     std::string dir = saveDir.empty() ? RomCacheDir() : saveDir;
     while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) dir.pop_back();
     std::string localSave = dir + "/" + game + ".sav";
-    {
-        std::lock_guard<std::mutex> lock(prepMutex);
-        prepLabel = "Hole Spielstand vom 3DS...";
-    }
-    uint64_t saveSize = 0;
-    bool isDir = false;
-    if (c.Stat(req.savePath, saveSize, isDir) && !isDir && saveSize > 0)
-    {
-        std::vector<uint8_t> data, chunk;
-        for (uint64_t off = 0; off < saveSize; )
-        {
-            uint32_t want = (uint32_t)std::min<uint64_t>(LINK_MAX_PAYLOAD, saveSize - off);
-            if (!c.Read(req.savePath, off, want, chunk) || chunk.size() != want)
-                return fail("Spielstand konnte nicht vom 3DS gelesen werden");
-            data.insert(data.end(), chunk.begin(), chunk.end());
-            off += want;
-        }
-        // keep what was on the PC before, just in case
-        QFile old(q(localSave));
-        if (old.exists() && old.open(QIODevice::ReadOnly))
-        {
-            QByteArray prev = old.readAll();
-            old.close();
-            if (prev.size() != (qsizetype)data.size() || memcmp(prev.data(), data.data(), data.size()) != 0)
-                WriteBackup(game, (const uint8_t*)prev.data(), (uint32_t)prev.size());
-        }
-        QDir().mkpath(q(dir));
-        if (!writeWholeFile(q(localSave), data.data(), data.size()))
-            return fail("Kann Spielstand nicht speichern: " + localSave);
-        WriteBackup(game, data.data(), (uint32_t)data.size());
-    }
-    // no save on the 3DS yet: the game creates one, which then goes to the 3DS
+    std::string err = syncSave(req.savePath, localSave, game);
+    if (!err.empty()) return fail(err);
 
     {
         std::lock_guard<std::mutex> lock(activeMutex);
@@ -292,10 +331,200 @@ void Session::prepare(LaunchRequest req, std::string saveDir)
         pendingGameName = game;
         pendingLocalSave = localSave;
     }
-    c.SetStatusText("Spiel laeuft in melonDS");
+    c.SetStatusText(c.Tr3DS("prep.running"));
     std::lock_guard<std::mutex> lock(prepMutex);
     readyRom = localRom;
     prepDone = true;
+}
+
+bool Session::readRemote(const std::string& path, bool& exists, std::vector<uint8_t>& data)
+{
+    Client& c = Link::Get();
+    exists = false;
+    data.clear();
+    uint64_t size = 0;
+    bool isDir = false;
+    if (!c.Stat(path, size, isDir)) return c.GetState() == State::Connected;   // not there
+    if (isDir) return true;
+    exists = true;
+    std::vector<uint8_t> chunk;
+    for (uint64_t off = 0; off < size; )
+    {
+        uint32_t want = (uint32_t)std::min<uint64_t>(LINK_MAX_PAYLOAD, size - off);
+        if (!c.Read(path, off, want, chunk) || chunk.size() != want) return false;
+        data.insert(data.end(), chunk.begin(), chunk.end());
+        off += want;
+    }
+    return true;
+}
+
+int Session::askOn3ds(const std::string& text)
+{
+    Client& c = Link::Get();
+    static std::atomic<uint32_t> nextId { (uint32_t)QDateTime::currentMSecsSinceEpoch() };
+    const uint32_t id = nextId++;
+    uint32_t conn = c.ConnectionCount();
+    if (!c.Ask(id, text)) return -1;
+    auto t0 = std::chrono::steady_clock::now();
+    while (true)
+    {
+        int choice;
+        if (c.TakeAnswer(id, choice)) return choice;
+        if (cancel) { c.CancelAsk(id); return -2; }
+        // after a reconnect the 3DS app may have forgotten the question
+        if (c.GetState() == State::Connected && c.ConnectionCount() != conn)
+        {
+            conn = c.ConnectionCount();
+            c.Ask(id, text);
+        }
+        // nobody answers: keep the 3DS save (the PC one is kept as a backup)
+        if (std::chrono::steady_clock::now() - t0 > std::chrono::minutes(10))
+        {
+            c.CancelAsk(id);
+            return 1;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+}
+
+std::string Session::syncSave(const std::string& remote, const std::string& localSave, const std::string& game)
+{
+    Client& c = Link::Get();
+    {
+        std::lock_guard<std::mutex> lock(prepMutex);
+        prepLabel = TrS("prep.fetchsave");
+    }
+    bool haveRemote = false;
+    std::vector<uint8_t> remoteData;
+    if (!readRemote(remote, haveRemote, remoteData)) return TrS("prep.savereadfail");
+
+    std::vector<uint8_t> localData;
+    bool haveLocal = readWholeFile(q(localSave), localData);
+    std::string hR = haveRemote ? hashOf(remoteData.data(), remoteData.size()) : "";
+    std::string hL = haveLocal ? hashOf(localData.data(), localData.size()) : "";
+    std::string last = SyncedHash(game);
+
+    bool usePc = false;
+    if (haveLocal && hL != hR && hL != last)
+    {
+        // the PC save changed since the last sync (played without the 3DS,
+        // or no record yet): the user decides, on the 3DS
+        const std::string lang = c.RemoteLanguage();
+        auto T3 = [&](const char* key) { return TrIn(lang, key); };
+        QString title;
+        if (!haveRemote) title = T3("ask.no3ds");
+        else if (last.empty()) title = T3("ask.differ");
+        else if (hR == last) title = T3("ask.newer");
+        else title = T3("ask.both");
+        QString when = QFileInfo(q(localSave)).lastModified().toString("dd.MM.yyyy HH:mm");
+        QString text = q(game) + "\n\n" + title + "\n" + T3("ask.pcdate").arg(when) + "\n\n" + T3("ask.note") + "\n" +
+                       T3("ask.usepc") + "\n" + (haveRemote ? T3("ask.use3ds") : T3("ask.nosave"));
+        {
+            std::lock_guard<std::mutex> lock(prepMutex);
+            prepLabel = TrS("prep.asking");
+        }
+        int choice = askOn3ds(text.toStdString());
+        if (choice == -2) return TrS("copy.cancelled");
+        if (choice < 0) return TrS("prep.savereadfail");
+        usePc = choice == 0;
+        Log(std::string("Spielstand-Frage (") + game + "): " + (usePc ? "PC" : "3DS"));
+    }
+
+    if (usePc)
+    {
+        {
+            std::lock_guard<std::mutex> lock(prepMutex);
+            prepLabel = TrS("prep.uploadpc");
+        }
+        if (haveRemote) WriteBackup(game, remoteData.data(), (uint32_t)remoteData.size());
+        WriteBackup(game, localData.data(), (uint32_t)localData.size());
+        if (!uploadNow(remote, localData)) return TrS("prep.uploadfail");
+        SetSyncedHash(game, hL);
+        return "";
+    }
+
+    // the 3DS save counts
+    if (haveLocal && hL != hR) WriteBackup(game, localData.data(), (uint32_t)localData.size());
+    if (haveRemote)
+    {
+        QDir().mkpath(QFileInfo(q(localSave)).absolutePath());
+        if (hL != hR && !writeWholeFile(q(localSave), remoteData.data(), remoteData.size()))
+            return Tr("prep.savewritefail").arg(q(localSave)).toStdString();
+        if (hL != hR) WriteBackup(game, remoteData.data(), (uint32_t)remoteData.size());
+        SetSyncedHash(game, hR);
+    }
+    else
+    {
+        // no save on the 3DS: the game starts fresh (the old PC one is in the backups)
+        if (haveLocal) QFile::remove(q(localSave));
+        SetSyncedHash(game, "");
+    }
+    return "";
+}
+
+std::string Session::RemoteSavePath(const std::string& romDir, const std::string& romName)
+{
+    std::string base = stripExt(romName);
+    std::string save = romDir + "/saves/" + base + ".sav";
+    std::string alt = romDir + "/" + base + ".sav";
+    uint64_t size = 0;
+    bool isDir = false;
+    if (!Link::Get().Stat(save, size, isDir) && Link::Get().Stat(alt, size, isDir)) return alt;
+    return save;
+}
+
+std::vector<Session::Backup> Session::Backups(const std::string& game)
+{
+    std::vector<Backup> out;
+    QDir dir(q(BackupDir(game)));
+    for (const QFileInfo& fi : dir.entryInfoList({"*.sav"}, QDir::Files, QDir::Name | QDir::Reversed))
+    {
+        Backup b;
+        b.path = fi.absoluteFilePath().toStdString();
+        b.size = (uint64_t)fi.size();
+        // "<game> yyyy-MM-dd_HH-mm-ss-zzz.sav"
+        QString stamp = fi.completeBaseName().right(23);
+        QDateTime t = QDateTime::fromString(stamp, "yyyy-MM-dd_HH-mm-ss-zzz");
+        b.when = (t.isValid() ? t : fi.lastModified()).toString("dd.MM.yyyy HH:mm:ss").toStdString();
+        out.push_back(b);
+    }
+    return out;
+}
+
+std::string Session::RestoreBackup(const std::string& romDir, const std::string& romName, const std::string& backupPath)
+{
+    const std::string game = stripExt(romName);
+    {
+        std::lock_guard<std::mutex> lock(activeMutex);
+        if (!activeGameName.empty() && activeGameName == game && (!EmuActive || EmuActive()))
+            return TrS("bak.running");
+    }
+    if (preparing) return TrS("bak.running");
+    if (Link::Get().GetState() != State::Connected) return TrS("connect.first");
+
+    std::vector<uint8_t> data;
+    if (!readWholeFile(q(backupPath), data) || data.empty()) return backupPath;
+
+    std::string remote = RemoteSavePath(romDir, romName);
+    bool haveRemote = false;
+    std::vector<uint8_t> current;
+    if (!readRemote(remote, haveRemote, current)) return TrS("prep.savereadfail");
+    // keep what is on the 3DS now (a new backup, so it is the newest one)
+    if (haveRemote) WriteBackup(game, current.data(), (uint32_t)current.size(), 6);
+    if (!uploadNow(remote, data)) return TrS("prep.uploadfail");
+
+    // the PC copy follows, so the next start sees both sides equal
+    std::string dir = lastSaveDir.empty() ? RomCacheDir() : lastSaveDir;
+    while (!dir.empty() && (dir.back() == '/' || dir.back() == '\\')) dir.pop_back();
+    QString localSave = q(dir + "/" + game + ".sav");
+    if (QFile::exists(localSave) || QFile::exists(q(RomCacheDir() + "/" + romName)))
+    {
+        QDir().mkpath(q(dir));
+        writeWholeFile(localSave, data.data(), data.size());
+    }
+    SetSyncedHash(game, hashOf(data.data(), data.size()));
+    Log("Backup auf den 3DS übertragen: " + backupPath);
+    return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +557,8 @@ bool Session::DeleteFromPC(const std::string& name, bool backups)
     QFile::remove(dir + q(name) + ".part");
     QFile::remove(dir + q(game) + ".sav");     // the PC copy; fetched again from the 3DS at the next start
     if (backups) QDir(q(BackupDir(game))).removeRecursively();
-    Log("Vom PC geloescht: " + name + (backups ? " (mit Backups)" : ""));
+    if (backups) SetSyncedHash(game, "");
+    Log("Vom PC gelöscht: " + name + (backups ? " (mit Backups)" : ""));
     RequestOnPcSync();
     return true;
 }
@@ -368,7 +598,7 @@ std::string Session::CopyRom(const std::string& remotePath, uint64_t size, const
                              const std::function<bool()>& keepGoing)
 {
     std::unique_lock<std::mutex> copyLock(copyMutex);
-    if (keepGoing && !keepGoing()) return "Abgebrochen";
+    if (keepGoing && !keepGoing()) return TrS("copy.cancelled");
 
     Client& c = Link::Get();
     const std::string romName = fileNameOf(remotePath);
@@ -381,7 +611,7 @@ std::string Session::CopyRom(const std::string& remotePath, uint64_t size, const
     if (off > size) { QFile::remove(part); off = 0; }   // not from this ROM
     QFile out(part);
     if (!out.open(off > 0 ? QIODevice::Append : (QIODevice::WriteOnly | QIODevice::Truncate)))
-        return "Kann ROM nicht speichern: " + localRom;
+        return Tr("copy.cantstore").arg(q(localRom)).toStdString();
 
     const uint64_t startOff = off;
     auto t0 = std::chrono::steady_clock::now();
@@ -408,16 +638,14 @@ std::string Session::CopyRom(const std::string& remotePath, uint64_t size, const
     {
         if (c.GetState() != State::Connected)
         {
-            if (++failures > 30) { out.close(); return "Verbindung verloren beim Uebertragen der ROM (Fortsetzen spaeter moeglich)"; }
+            if (++failures > 30) { out.close(); return TrS("copy.lost"); }
             std::this_thread::sleep_for(std::chrono::seconds(1));
             if (progress && !progress(off, size, wireDone, secsNow())) stopped = true;
             continue;
         }
         if (std::chrono::steady_clock::now() - lastStatus > std::chrono::seconds(5))
         {
-            char st[96];
-            snprintf(st, sizeof(st), "ROM wird kopiert: %d%%", (int)(off * 100 / size));
-            c.SetStatusText(st);
+            c.SetStatusText(QString::fromStdString(c.Tr3DS("copy.status")).arg((int)(off * 100 / size)).toStdString());
             lastStatus = std::chrono::steady_clock::now();
         }
         // in pieces of 16 MB: in between melonDS can hear the 3DS (a game
@@ -435,32 +663,30 @@ std::string Session::CopyRom(const std::string& remotePath, uint64_t size, const
         }
         if (!ok && off < size && !stopped)
         {
-            if (++failures > 30) { out.close(); return "Verbindung verloren beim Uebertragen der ROM (Fortsetzen spaeter moeglich)"; }
+            if (++failures > 30) { out.close(); return TrS("copy.lost"); }
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     }
     out.close();
-    if (stopped) return "Abgebrochen";
+    if (stopped) return TrS("copy.cancelled");
 
     {
         double secs = secsNow();
-        int isecs = (int)secs;
         uint64_t moved = size - startOff;
-        char summary[220];
-        snprintf(summary, sizeof(summary), "3DS Link: ROM kopiert in %d:%02d - Daten %s/s, WLAN %s/s, Kompression sparte %d%%",
-                 isecs / 60, isecs % 60, human((uint64_t)(moved / (secs > 0 ? secs : 1))).c_str(),
-                 human((uint64_t)(wireDone / (secs > 0 ? secs : 1))).c_str(),
-                 moved > 0 ? (int)(100 - wireDone * 100 / moved) : 0);
+        std::string summary = Tr("copy.summary")
+            .arg(mmss(secs), q(human((uint64_t)(moved / (secs > 0 ? secs : 1)))),
+                 q(human((uint64_t)(wireDone / (secs > 0 ? secs : 1)))))
+            .arg(moved > 0 ? (int)(100 - wireDone * 100 / moved) : 0).toStdString();
         c.PostMessage(summary);
-        Log(std::string(summary + 11) + " (" + romName + ", " + human(size) +
+        Log(summary + " (" + romName + ", " + human(size) +
             (startOff ? ", fortgesetzt ab " + human(startOff) : std::string()) +
-            (SkipPadding ? ", Fuellbereich ueberspringen an" : "") + ")");
+            (SkipPadding ? ", Füllbereich überspringen an" : "") + ")");
         std::string st = c.GetStats();
         if (!st.empty()) Log("  3DS: " + st);
     }
     QFile::remove(q(localRom));
     if (!QFile::rename(part, q(localRom)))
-        return "Kann ROM nicht speichern: " + localRom;
+        return Tr("copy.cantstore").arg(q(localRom)).toStdString();
     RequestOnPcSync();
     return "";
 }
@@ -484,7 +710,7 @@ void Session::SetActiveSave(const std::string& localPath)
     activeRemoteSave = pendingRemoteSave;
     activeGameName = pendingGameName;
     if (!localPath.empty() && localPath != pendingLocalSave)
-        Link::Get().PostMessage("3DS Link: Achtung, melonDS speichert an einem anderen Ort als erwartet - Spielstand-Sync kann fehlen");
+        Link::Get().PostMessage(TrS("save.otherplace"));
 }
 
 // ---------------------------------------------------------------------------
@@ -571,8 +797,8 @@ void Session::uploader()
 
         if (!announcedRetry)
         {
-            Link::Get().PostMessage("3DS Link: Spielstand wird auf den 3DS geschrieben... (am PC ist er schon gesichert)");
-            Link::Get().SetStatusText("Spielstand wird geschrieben - 3DS nicht ausschalten");
+            Link::Get().PostMessage(TrS("save.uploading"));
+            Link::Get().SetStatusText(Link::Get().Tr3DS("save.uploading3ds"));
         }
         auto u0 = std::chrono::steady_clock::now();
         bool ok = uploadNow(remote, data);
@@ -592,15 +818,15 @@ void Session::uploader()
         }
         if (ok)
         {
-            Link::Get().PostMessage("3DS Link: Spielstand auf dem 3DS gesichert");
-            Link::Get().SetStatusText("Spielstand gesichert " +
-                QDateTime::currentDateTime().toString("HH:mm").toStdString());
+            SetSyncedHash(game, hashOf(data.data(), data.size()));
+            Link::Get().PostMessage(TrS("save.done"));
+            Link::Get().SetStatusText(q(Link::Get().Tr3DS("save.done3ds")).arg(QDateTime::currentDateTime().toString("HH:mm")).toStdString());
             announcedRetry = false;
         }
         else
         {
             if (!announcedRetry)
-                Link::Get().PostMessage("3DS Link: Spielstand konnte nicht auf den 3DS - wird nachgeholt (Kopie am PC ist sicher)");
+                Link::Get().PostMessage(TrS("save.retry"));
             announcedRetry = true;
             // try again later unless a newer save arrived meanwhile
             std::lock_guard<std::mutex> lock(upMutex);

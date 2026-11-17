@@ -117,6 +117,21 @@ public:
     // a game the user picked on the 3DS (fetched in the background)
     bool TakeLaunchRequest(LaunchRequest& out);
 
+    // a question with two answers on the 3DS (A / B). `text`: lines separated
+    // by '\n', the last two are the labels for A and B. The answer arrives
+    // through TakeAnswer (0 = A, 1 = B).
+    bool Ask(uint32_t id, const std::string& text);
+    void CancelAsk(uint32_t id);
+    bool TakeAnswer(uint32_t id, int& choice);
+
+    // language of the 3DS app: texts shown there (status, questions) use it
+    std::string RemoteLanguage() { std::lock_guard<std::mutex> l(eventMutex); return remoteLang; }
+    // a text in the language of the 3DS app
+    std::string Tr3DS(const char* key);
+
+    // the user asked for a screenshot on the 3DS (cleared by reading)
+    bool TakeScreenshotRequest() { return screenshotWanted.exchange(false); }
+
     // show a message in melonDS (thread-safe)
     void PostMessage(const std::string& msg) { pushMessage(msg); }
 
@@ -149,6 +164,13 @@ private:
     bool haveLaunch = false;
     LaunchRequest pendingLaunch;
     void pollEvents();
+
+    std::mutex eventMutex;
+    bool haveAnswer = false;
+    uint32_t answerId = 0;
+    int answerChoice = 0;
+    std::atomic<bool> screenshotWanted { false };
+    std::string remoteLang = "en";
 
     // video: latest frame waiting to be sent + what the 3DS should have
     std::mutex videoMutex;

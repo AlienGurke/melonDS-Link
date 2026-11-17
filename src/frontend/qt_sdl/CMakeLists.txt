@@ -13,6 +13,7 @@ set(SOURCES_QT_SDL
     LinkClient.cpp
     LinkSession.cpp
     LinkRomDialog.cpp
+    LinkLang.cpp
     lz4/lz4.c
     EmuThread.cpp
     CheatImportDialog.cpp

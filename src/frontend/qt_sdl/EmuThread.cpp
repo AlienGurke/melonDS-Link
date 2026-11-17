@@ -56,6 +56,11 @@
 
 #include "EmuInstance.h"
 #include "LinkClient.h"
+#include "LinkLang.h"
+#include "LinkSession.h"
+#include <QDateTime>
+#include <QDir>
+#include <QImage>
 
 using namespace melonDS;
 
@@ -153,6 +158,72 @@ static void linkCaptureBottomScreen(melonDS::NDS* nds)
     // texture row 0 is DS line 0 (same as the software path), so no flip
     Link::Get().SubmitBottomScreen(pixels.data(), false);
 #endif
+}
+
+// melonDS Link: screenshot asked for on the 3DS - both DS screens at the
+// resolution melonDS renders them (top above bottom), saved as PNG
+static void linkScreenshot(melonDS::NDS* nds)
+{
+    QImage shot;
+    void* top = nullptr;
+    void* bottom = nullptr;
+    if (nds->GPU.GetFramebuffers(&top, &bottom))
+    {
+        if (!top || !bottom) return;
+        shot = QImage(256, 384, QImage::Format_RGB32);
+        memcpy(shot.bits(), top, 256 * 192 * 4);
+        memcpy(shot.bits() + 256 * 192 * 4, bottom, 256 * 192 * 4);
+    }
+#ifdef OGLRENDERER_ENABLED
+    else if (top)
+    {
+        GLuint tex = *(GLuint*)top;
+        GLint prevRead = 0, prevTex = 0;
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &prevTex);
+        GLint w = 0, h = 0;
+        glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_WIDTH, &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_HEIGHT, &h);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, prevTex);
+        if (w < 256 || h < 192 || w > 8192 || h > 8192) return;
+
+        GLuint fb = 0;
+        glGenFramebuffers(1, &fb);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fb);
+        shot = QImage(w, h * 2, QImage::Format_RGBX8888);
+        bool ok = true;
+        for (int layer = 0; layer < 2 && ok; layer++)
+        {
+            glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 0, layer);
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+            if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) { ok = false; break; }
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, shot.scanLine(layer * h));
+        }
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
+        glDeleteFramebuffers(1, &fb);
+        if (!ok) shot = QImage();
+    }
+#endif
+
+    std::string game = Link::Session::Get().ActiveGame();
+    std::thread([shot, game]
+    {
+        // encoding a PNG takes a moment: not on the emulator thread
+        QString dir = QString::fromStdString(Link::Session::ScreenshotDir());
+        QDir().mkpath(dir);
+        QString name = QString::fromStdString(game.empty() ? "melonDS" : game) + " " +
+                       QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss") + ".png";
+        bool ok = !shot.isNull() && shot.save(dir + "/" + name, "PNG");
+        if (ok)
+        {
+            Link::Get().PostMessage(Link::Tr("shot.saved").arg(name).toStdString());
+            Link::Get().SetStatusText(Link::Get().Tr3DS("shot.saved3ds"));
+        }
+        else
+            Link::Get().PostMessage(Link::TrS("shot.failed"));
+    }).detach();
 }
 
 EmuThread::EmuThread(EmuInstance* inst, QObject* parent) : QThread(parent)
@@ -416,6 +487,9 @@ void EmuThread::run()
             {
                 nlines = emuInstance->nds->RunFrame();
             }
+
+            if (emuInstance->instanceID == 0 && Link::Get().TakeScreenshotRequest())
+                linkScreenshot(emuInstance->nds);
 
             // melonDS Link: send the bottom screen to the 3DS, at most ~60 times a second
             if (emuInstance->instanceID == 0 && Link::Get().WantsVideo())

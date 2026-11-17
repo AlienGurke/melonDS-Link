@@ -39,6 +39,7 @@ private:
     void refresh();
     void startCopy(bool onlySelected);
     void deleteTicked();
+    void showBackups();
     void onTimer();
     void fillTable();
     void setBusy(bool busy);
@@ -53,6 +54,7 @@ private:
     QPushButton* btnCopySel;
     QPushButton* btnCopyAll;
     QPushButton* btnDelete;
+    QPushButton* btnBackups;
     QPushButton* btnStop;
     QPushButton* btnClose;
     QTimer* timer;

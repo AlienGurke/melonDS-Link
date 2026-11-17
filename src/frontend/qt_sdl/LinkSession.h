@@ -48,9 +48,15 @@ public:
     // folders
     static std::string BaseDir();
     static std::string RomCacheDir();
+    static std::string DebugDir();        // log and test results
+    static std::string ScreenshotDir();
+
+    // the save both sides had at the last sync (SHA-1, "" = unknown)
+    static std::string SyncedHash(const std::string& game);
+    static void SetSyncedHash(const std::string& game, const std::string& hash);
     static std::string BackupDir(const std::string& gameName);
 
-    // append a line to melonDS-Link/link-log.txt (with date and time)
+    // append a line to melonDS-Link/Debug/link-log.txt (with date and time)
     static void Log(const std::string& line);
 
     // keep the newest `keep` backups of a game (also used by tests)
@@ -82,9 +88,24 @@ public:
     // (only spot checks) - faster, setting "Link.SkipPadding"
     static std::atomic<bool> SkipPadding;
 
+    // set by the UI: is a game running in melonDS right now
+    static std::function<bool()> EmuActive;
+
     // counts up whenever a game is picked on the 3DS: a running preload
     // stops then (it can continue later), the game comes first
     uint32_t LaunchCount() const { return launchCount.load(); }
+
+    // the game started from the 3DS last ("" = none)
+    std::string ActiveGame() { std::lock_guard<std::mutex> l(activeMutex); return activeGameName; }
+
+    // --- save backups on the PC ---
+    struct Backup { std::string path, when; uint64_t size = 0; };
+    static std::vector<Backup> Backups(const std::string& game);   // newest first
+    // where the 3DS keeps the save of a ROM (asks the 3DS)
+    static std::string RemoteSavePath(const std::string& romDir, const std::string& romName);
+    // put a backup on the 3DS as the save (the current one there becomes a
+    // backup first). Blocking; returns "" on success, else the reason.
+    std::string RestoreBackup(const std::string& romDir, const std::string& romName, const std::string& backupPath);
 
     // tell the 3DS which games are on the PC (marked "PC" in its list);
     // done in the background
@@ -97,6 +118,10 @@ private:
     void uploader();
     bool uploadNow(const std::string& remote, const std::vector<uint8_t>& data);
     void syncOnPc();
+    std::string syncSave(const std::string& remote, const std::string& localSave, const std::string& game);
+    static bool readRemote(const std::string& path, bool& exists, std::vector<uint8_t>& data);
+    int askOn3ds(const std::string& text);   // 0 = A, 1 = B, -1 failed, -2 cancelled
+    std::string lastSaveDir;
 
     std::mutex copyMutex;                     // one ROM copy at a time
     std::atomic<uint32_t> launchCount { 0 };

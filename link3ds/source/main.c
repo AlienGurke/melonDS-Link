@@ -39,12 +39,169 @@ static volatile bool g_tcpConnected = false;
 static char g_statusText[128] = "";
 static char g_peerName[32] = "";
 
+/* ------------------------------------------------------------------ */
+/* text: the console font is code page 437 (has ä ö ü ß é ...), our    */
+/* strings and file names are UTF-8                                     */
+
+static void utf8ToCp437(char* out, size_t outSize, const char* in)
+{
+    static const struct { u32 cp; u8 c; } map[] = {
+        {0xE4,0x84},{0xF6,0x94},{0xFC,0x81},{0xC4,0x8E},{0xD6,0x99},{0xDC,0x9A},{0xDF,0xE1},
+        {0xE9,0x82},{0xE8,0x8A},{0xEA,0x88},{0xEB,0x89},{0xE0,0x85},{0xE1,0xA0},{0xE2,0x83},
+        {0xE7,0x87},{0xC7,0x80},{0xC9,0x90},{0xED,0xA1},{0xEC,0x8D},{0xEE,0x8C},{0xEF,0x8B},
+        {0xF3,0xA2},{0xF2,0x95},{0xF4,0x93},{0xFA,0xA3},{0xF9,0x97},{0xFB,0x96},{0xF1,0xA4},
+        {0xD1,0xA5},{0xE5,0x86},{0xC5,0x8F},{0xE6,0x91},{0xC6,0x92},{0xFF,0x98},{0xBF,0xA8},
+        {0xA1,0xAD},{0xB0,0xF8},{0x2013,'-'},{0x2014,'-'},{0x2026,'.'},{0x2019,'\''},{0x201E,'"'},
+        {0x201C,'"'},{0x201D,'"'},{0xE9,0x82},
+    };
+    size_t o = 0;
+    const u8* p = (const u8*)in;
+    while (*p && o + 1 < outSize)
+    {
+        u32 cp;
+        if (*p < 0x80) cp = *p++;
+        else if ((*p & 0xE0) == 0xC0 && p[1]) { cp = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F); p += 2; }
+        else if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) { cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); p += 3; }
+        else { p++; while ((*p & 0xC0) == 0x80) p++; cp = '?'; }
+        u8 c = '?';
+        if (cp < 0x80) c = (u8)cp;
+        else for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) if (map[i].cp == cp) { c = map[i].c; break; }
+        out[o++] = (char)c;
+    }
+    out[o] = 0;
+}
+
+/* languages (English is the default) */
+enum { LANG_EN, LANG_DE, LANG_COUNT };
+static int g_lang = LANG_EN;
+static const char* const g_langCodes[LANG_COUNT] = { "en", "de" };
+static volatile bool g_haveLangEvent = false;   /* tell melonDS about a new language */
+
+enum StrId
+{
+    S_TITLE, S_IP, S_CONNECTED, S_WAITING, S_CONTROLS, S_ACTIVE, S_PICTURE, S_DISPLAY,
+    S_ENLARGED, S_ORIGINAL, S_PICK_GAME, S_NO_GAMES, S_LIST_HINT, S_LIST_HINT_BACK, S_RUNNING,
+    S_HINT_MENU, S_HINT_CSTICK, S_HINT_CONNECT, S_MENU_TITLE, S_M_GAMES, S_M_DISPLAY, S_M_TOPOFF,
+    S_M_SHOT, S_M_LANG, S_M_BACK, S_M_QUIT, S_MENU_HINT, S_STARTING, S_SHOT_REQ, S_NOT_CONNECTED,
+    S_WIFI_FAIL, S_WIFI_FAIL2, S_ASK_HINT, S_PC_COPIED, S_XFER_WIFI, S_XFER_DATA, S_XFER_WAIT,
+    S_LANGNAME, S_COUNT
+};
+
+static const char* const g_strs[LANG_COUNT][S_COUNT] = {
+    {   /* English */
+        "melonDS Link", "IP address:", "connected", "waiting...", "Controls:", "active", "Picture:",
+        "Display:", "Enlarged", "Original (1:1)", "Pick a game", "No .nds files found.",
+        "A start  X favorite  Y reload", "A start  X favorite  Y reload  B back", "Running:",
+        "SELECT+START: menu (hold: quit)", "C-stick: down = games, up = display",
+        "In melonDS: 3DS Link > Connect to 3DS", "melonDS Link menu", "Game list", "Display",
+        "Turn top screen off", "Screenshot (saved on the PC)", "Language", "Back to the game", "Quit",
+        "A select   B close", "Starting game - waiting for melonDS...", "Screenshot requested",
+        "melonDS is not connected", "WiFi could not be started.", "Is WiFi on? START to quit.",
+        "A / B to choose", "PC = copied to the PC", "WiFi", "data", "Waiting:", "English",
+    },
+    {   /* Deutsch */
+        "melonDS Link", "IP-Adresse:", "verbunden", "wartet...", "Steuerung:", "aktiv", "Bild:",
+        "Anzeige:", "Vergrößert", "Original (1:1)", "Spiel wählen", "Keine .nds-Dateien gefunden.",
+        "A Start  X Favorit  Y neu laden", "A Start  X Favorit  Y neu laden  B zurück", "Läuft:",
+        "SELECT+START: Menü (halten: beenden)", "C-Stick: runter = Spiele, hoch = Anzeige",
+        "In melonDS: 3DS Link > Mit 3DS verbinden", "melonDS-Link-Menü", "Spieleliste", "Anzeige",
+        "Oberen Bildschirm ausschalten", "Screenshot (wird am PC gespeichert)", "Sprache",
+        "Zurück zum Spiel", "Beenden", "A auswählen   B schließen",
+        "Starte Spiel - warte auf melonDS...", "Screenshot angefordert", "melonDS ist nicht verbunden",
+        "WLAN konnte nicht gestartet werden.", "Ist WLAN an? START zum Beenden.", "Mit A / B wählen",
+        "PC = schon auf dem PC", "WLAN", "Daten", "Wartet:", "Deutsch",
+    },
+};
+static char g_tr[S_COUNT][80];   /* current language, already in code page 437 */
+
+/* the texts can be changed in sdmc:/3ds/melonDS-Link/Language/<code>.txt
+   (key=text, UTF-8); the files are written with all keys when missing */
+static const char* const g_strKeys[S_COUNT] = {
+    "title", "ip", "connected", "waiting", "controls", "active", "picture", "display",
+    "enlarged", "original", "pick_game", "no_games", "list_hint", "list_hint_back", "running",
+    "hint_menu", "hint_cstick", "hint_connect", "menu_title", "menu_games", "menu_display", "menu_topoff",
+    "menu_shot", "menu_lang", "menu_back", "menu_quit", "menu_hint", "starting", "shot_requested", "not_connected",
+    "wifi_fail", "wifi_fail2", "ask_hint", "pc_copied", "xfer_wifi", "xfer_data", "xfer_wait",
+    "language_name",
+};
+static char g_custom[LANG_COUNT][S_COUNT][80];   /* from the files ("" = built-in) */
+#define LANG_DIR "sdmc:/3ds/melonDS-Link/Language"
+
+static void loadLanguageFiles(void)
+{
+    mkdir("sdmc:/3ds", 0777);
+    mkdir("sdmc:/3ds/melonDS-Link", 0777);
+    mkdir(LANG_DIR, 0777);
+    for (int l = 0; l < LANG_COUNT; l++)
+    {
+        char path[96];
+        snprintf(path, sizeof(path), LANG_DIR "/%s.txt", g_langCodes[l]);
+        int found = 0;
+        FILE* f = fopen(path, "r");
+        if (f)
+        {
+            char line[256];
+            while (fgets(line, sizeof(line), f))
+            {
+                line[strcspn(line, "\r\n")] = 0;
+                char* eq = strchr(line, '=');
+                if (line[0] == '#' || !eq) continue;
+                *eq = 0;
+                for (int i = 0; i < S_COUNT; i++)
+                    if (strcmp(line, g_strKeys[i]) == 0)
+                    {
+                        snprintf(g_custom[l][i], sizeof(g_custom[l][i]), "%s", eq + 1);
+                        found++;
+                        break;
+                    }
+            }
+            fclose(f);
+        }
+        if (found >= S_COUNT) continue;
+        /* new or incomplete (a newer app version): write all keys, keep the user's texts */
+        f = fopen(path, "w");
+        if (!f) continue;
+        fprintf(f, "# melonDS Link (3DS) - key=text, UTF-8. Restart the app after editing.\n");
+        for (int i = 0; i < S_COUNT; i++)
+            fprintf(f, "%s=%s\n", g_strKeys[i], g_custom[l][i][0] ? g_custom[l][i] : g_strs[l][i]);
+        fclose(f);
+    }
+}
+
+static void applyLanguage(void)
+{
+    if (g_lang < 0 || g_lang >= LANG_COUNT) g_lang = LANG_EN;
+    for (int i = 0; i < S_COUNT; i++)
+        utf8ToCp437(g_tr[i], sizeof(g_tr[i]), g_custom[g_lang][i][0] ? g_custom[g_lang][i] : g_strs[g_lang][i]);
+}
+#define T(id) (g_tr[id])
+
+/* text from melonDS arrives as UTF-8 */
 static void setStatusText(const char* s)
 {
+    char c[128];
+    utf8ToCp437(c, sizeof(c), s);
     LightLock_Lock(&g_lock);
-    snprintf(g_statusText, sizeof(g_statusText), "%s", s);
+    snprintf(g_statusText, sizeof(g_statusText), "%s", c);
     LightLock_Unlock(&g_lock);
 }
+
+/* user interface state (main thread draws, input thread routes keys) */
+static volatile bool g_linkMenuOpen = false;   /* SELECT+START menu */
+static volatile bool g_menuToggle = false;     /* SELECT+START tapped (input -> main) */
+static volatile bool g_topOff = false;         /* top screen backlight off */
+
+/* a question from melonDS (LINK_CMD_ASK), answered with A or B */
+static volatile bool g_askActive = false;
+static u32 g_askId = 0;
+#define ASK_LINES 12
+static char g_askLines[ASK_LINES][52];
+static int g_askLineCount = 0;
+static char g_askA[48], g_askB[48];
+/* events for melonDS besides the launch (guarded by g_lock) */
+static bool g_haveAnswer = false;
+static u32 g_answerId = 0, g_answerChoice = 0;
+static bool g_haveShot = false;
 
 /* ------------------------------------------------------------------ */
 /* socket helpers                                                      */
@@ -337,7 +494,7 @@ static void requestLaunch(int idx)
     g_haveEvent = true;
     snprintf(g_currentGame, sizeof(g_currentGame), "%.120s", base);
     snprintf(g_lastGame, sizeof(g_lastGame), "%s", name);
-    snprintf(g_statusText, sizeof(g_statusText), "Starte Spiel - warte auf melonDS...");
+    snprintf(g_statusText, sizeof(g_statusText), "%s", T(S_STARTING));
     LightLock_Unlock(&g_lock);
 
     g_gameStarted = true;
@@ -611,9 +768,10 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
         if (secs1000 > 0 && blocks % 4 == 0)
         {
             LightLock_Lock(&g_lock);
-            snprintf(g_xferInfo, sizeof(g_xferInfo), "WLAN %lu KB/s, Daten %lu KB/s, LZ4 %s",
-                     (unsigned long)(wire / secs1000), (unsigned long)(sent / secs1000),
-                     !compress ? "-" : g_streamCompress ? "an" : "aus (CPU zu langsam)");
+            const bool de = g_lang == LANG_DE;
+            snprintf(g_xferInfo, sizeof(g_xferInfo), "%s %lu KB/s, %s %lu KB/s, LZ4 %s", T(S_XFER_WIFI),
+                     (unsigned long)(wire / secs1000), T(S_XFER_DATA), (unsigned long)(sent / secs1000),
+                     !compress ? "-" : g_streamCompress ? (de ? "an" : "on") : (de ? "aus (CPU zu langsam)" : "off (CPU too slow)"));
             /* where the time goes: waiting for the reader / for the WiFi buffer,
                and how fast the SD card and LZ4 are on their own (MB/s) */
             u64 el = svcGetSystemTick() - tick0;
@@ -621,8 +779,8 @@ static bool streamFile(int fd, const LinkHeader* h, const char* path, u64 offset
             unsigned fPct = secs1000 ? (unsigned)(g_statSendSleeps * g_sendSleepUs / 10 / secs1000) : 0;
             double sd = g_statReadTicks ? g_statReadBytes / (g_statReadTicks / (double)SYSCLOCK_ARM11) / 1048576.0 : 0;
             double lz = g_statPackTicks ? g_statPackBytes / (g_statPackTicks / (double)SYSCLOCK_ARM11) / 1048576.0 : 0;
-            snprintf(g_xferInfo2, sizeof(g_xferInfo2), "Wartet: Leser %u%% WLAN %u%%  SD %.1f LZ4 %.1f",
-                     wPct > 100 ? 100 : wPct, fPct > 100 ? 100 : fPct, sd, lz);
+            snprintf(g_xferInfo2, sizeof(g_xferInfo2), "%s %s %u%% %s %u%%  SD %.1f LZ4 %.1f", T(S_XFER_WAIT),
+                     de ? "Leser" : "reader", wPct > 100 ? 100 : wPct, T(S_XFER_WIFI), fPct > 100 ? 100 : fPct, sd, lz);
             LightLock_Unlock(&g_lock);
         }
     }
@@ -653,6 +811,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         APT_CheckNew3DS(&isNew);
         r.isNew3DS = isNew ? 1 : 0;
         snprintf(r.name, sizeof(r.name), "%s", isNew ? "New 3DS" : "3DS");
+        snprintf(r.lang, sizeof(r.lang), "%s", g_langCodes[g_lang]);
         uint32_t ver = (h->len >= 4) ? *(uint32_t*)payload : 0;
         return sendResponse(fd, h, ver == LINK_VERSION ? LINK_OK : LINK_ERR_VERSION, &r, sizeof(r));
     }
@@ -806,9 +965,93 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             used += g_event.savePathLen;
             g_haveEvent = false;
         }
+        else if (g_haveAnswer || g_haveShot || g_haveLangEvent)
+        {
+            LinkEvent ev;
+            memset(&ev, 0, sizeof(ev));
+            if (g_haveAnswer)
+            {
+                ev.type = LINK_EVENT_ANSWER;
+                ev.romSize = g_answerId;
+                ev.reserved = g_answerChoice;
+                g_haveAnswer = false;
+            }
+            else if (g_haveShot)
+            {
+                ev.type = LINK_EVENT_SCREENSHOT;
+                g_haveShot = false;
+            }
+            else
+            {
+                ev.type = LINK_EVENT_LANGUAGE;
+                ev.romPathLen = (uint16_t)strlen(g_langCodes[g_lang]);
+                g_haveLangEvent = false;
+            }
+            memcpy(g_outbuf, &ev, sizeof(ev));
+            used = sizeof(ev);
+            if (ev.type == LINK_EVENT_LANGUAGE)
+            {
+                memcpy(g_outbuf + used, g_langCodes[g_lang], ev.romPathLen);
+                used += ev.romPathLen;
+            }
+            have = true;
+        }
         LightLock_Unlock(&g_lock);
         if (!have) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
         return sendResponse(fd, h, LINK_OK, g_outbuf, used);
+    }
+
+    case LINK_CMD_ASK:
+    {
+        if (h->len < 4) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
+        u32 id;
+        memcpy(&id, payload, 4);
+        if (h->len == 4)
+        {
+            /* take it away (melonDS decided otherwise / gave up) */
+            if (g_askActive && g_askId == id) g_askActive = false;
+            return sendResponse(fd, h, LINK_OK, NULL, 0);
+        }
+        /* split into lines; the last two are the labels for A and B */
+        static char text[1024];
+        size_t n = h->len - 4 < sizeof(text) - 1 ? h->len - 4 : sizeof(text) - 1;
+        memcpy(text, payload + 4, n);
+        text[n] = 0;
+        char* lines[ASK_LINES + 2];
+        int count = 0;
+        for (char* q = text; count < ASK_LINES + 2; )
+        {
+            lines[count++] = q;
+            char* nl = strchr(q, '\n');
+            if (!nl) break;
+            *nl = 0;
+            q = nl + 1;
+        }
+        if (count < 3) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
+        LightLock_Lock(&g_lock);
+        g_askLineCount = 0;
+        for (int i = 0; i < count - 2 && g_askLineCount < ASK_LINES; i++)
+        {
+            /* wrap at 48 columns */
+            char conv[256];
+            utf8ToCp437(conv, sizeof(conv), lines[i]);
+            size_t len = strlen(conv), pos = 0;
+            do
+            {
+                size_t take = len - pos > 48 ? 48 : len - pos;
+                if (take == 48)
+                    for (size_t b = 48; b > 20; b--) if (conv[pos + b] == ' ') { take = b; break; }
+                snprintf(g_askLines[g_askLineCount++], sizeof(g_askLines[0]), "%.*s", (int)take, conv + pos);
+                pos += take;
+                while (conv[pos] == ' ') pos++;
+            } while (pos < len && g_askLineCount < ASK_LINES);
+        }
+        utf8ToCp437(g_askA, sizeof(g_askA), lines[count - 2]);
+        utf8ToCp437(g_askB, sizeof(g_askB), lines[count - 1]);
+        g_askId = id;
+        g_askActive = true;
+        LightLock_Unlock(&g_lock);
+        return sendResponse(fd, h, LINK_OK, NULL, 0);
     }
 
     case LINK_CMD_READSTREAM:
@@ -1406,6 +1649,7 @@ static void inputThread(void* arg)
     u64 lastHello = 0;
     u32 packetId = 0;
     int quitHold = 0;
+    bool comboSeen = false;
     bool cstickUpWas = false;
     u32 prevHeld = 0;
     int heloCheck = 0;
@@ -1417,9 +1661,15 @@ static void inputThread(void* arg)
         hidScanInput();
         u32 held = hidKeysHeld();
 
-        /* SELECT + START for ~1 s quits */
-        if ((held & KEY_SELECT) && (held & KEY_START)) quitHold++;
-        else quitHold = 0;
+        /* SELECT + START: tap = melonDS Link menu, hold ~1 s = quit */
+        bool combo = (held & KEY_SELECT) && (held & KEY_START);
+        if (combo) { quitHold++; comboSeen = true; }
+        else if (!(held & (KEY_SELECT | KEY_START)))
+        {
+            if (comboSeen && quitHold <= 250) g_menuToggle = true;
+            comboSeen = false;
+            quitHold = 0;
+        }
 
         /* C-stick up toggles zoom */
         bool cup = (held & KEY_CSTICK_UP) != 0;
@@ -1429,19 +1679,21 @@ static void inputThread(void* arg)
         /* C-stick down opens/closes the game list */
         u32 down = held & ~prevHeld;
         prevHeld = held;
-        if (down & KEY_CSTICK_DOWN)
+        bool capture = g_menuOpen || g_linkMenuOpen || g_askActive;
+        if ((down & KEY_CSTICK_DOWN) && !g_askActive)
         {
-            if (!g_menuOpen) g_menuOpen = true;
+            if (!g_menuOpen) { g_menuOpen = true; g_linkMenuOpen = false; }
             else if (g_gameStarted) g_menuOpen = false;
         }
-        else if (g_menuOpen)
+        else if (capture)
         {
             LightLock_Lock(&g_lock);
             g_menuKeys |= down;
             LightLock_Unlock(&g_lock);
         }
-        /* while the list is open, the game gets no input */
-        u32 gameKeys = g_menuOpen ? 0 : held;
+        /* while a list, the menu or a question is shown, the game gets no input */
+        u32 gameKeys = capture ? 0 : held;
+        if (combo) gameKeys &= ~(KEY_SELECT | KEY_START);
 
         /* HELO from the PC (keep-alive, once a second): checking every 50 ms
            is plenty and keeps the socket service free for the transfers */
@@ -1613,16 +1865,25 @@ static void setLine(int row, const char* fmt, ...)
 
 #define CONFIG_PATH "sdmc:/3ds/melonDS-Link.cfg"
 
+static void setTopBacklight(bool on)
+{
+    if (on == !g_topOff) return;
+    if (on) GSPLCD_PowerOnBacklight(GSPLCD_SCREEN_TOP);
+    else GSPLCD_PowerOffBacklight(GSPLCD_SCREEN_TOP);
+    g_topOff = !on;
+}
+
 static void loadConfig(void)
 {
     FILE* f = fopen(CONFIG_PATH, "r");
     if (!f) return;
-    char line[64];
+    char line[320];
     while (fgets(line, sizeof(line), f))
     {
         int v;
         char dir[128];
         if (sscanf(line, "zoom=%d", &v) == 1) g_zoom = v != 0;
+        else if (sscanf(line, "lang=%d", &v) == 1) g_lang = v;
         else if (strncmp(line, "last=", 5) == 0)
         {
             snprintf(g_lastGame, sizeof(g_lastGame), "%s", line + 5);
@@ -1643,6 +1904,7 @@ static void saveConfig(void)
     FILE* f = fopen(CONFIG_PATH, "w");
     if (!f) return;
     fprintf(f, "zoom=%d\n", g_zoom ? 1 : 0);
+    fprintf(f, "lang=%d\n", g_lang);
     fprintf(f, "romdir=%s\n", g_romDir);
     if (g_lastGame[0]) fprintf(f, "last=%s\n", g_lastGame);
     fclose(f);
@@ -1663,19 +1925,21 @@ int main(int argc, char** argv)
     irrstInit();   /* C-stick / ZL / ZR on New 3DS */
     LightLock_Init(&g_lock);
     LightLock_Init(&g_ackLock);
+    gspLcdInit();   /* top screen backlight on/off */
     loadConfig();
+    loadLanguageFiles();
+    applyLanguage();
     loadFavs();
     scanGames();
-
-    printf("\x1b[1;1H\x1b[36mmelonDS Link\x1b[0m  (Protokoll v%u)\n\n", (unsigned)LINK_VERSION);
 
     u32* socBuf = (u32*)memalign(SOC_ALIGN, SOC_BUFFERSIZE);
     g_payload = (uint8_t*)malloc(LINK_MAX_PAYLOAD + LINK_MAX_PATH + 64);
     g_outbuf = (uint8_t*)malloc(LINK_MAX_PAYLOAD);
     if (!socBuf || !g_payload || !g_outbuf || R_FAILED(socInit(socBuf, SOC_BUFFERSIZE)))
     {
-        printf("\x1b[31mWLAN konnte nicht gestartet werden.\x1b[0m\n");
-        printf("Ist WLAN an? START zum Beenden.\n");
+        printf("\x1b[1;1H\x1b[36m%s\x1b[0m\n\n", T(S_TITLE));
+        printf("\x1b[31m%s\x1b[0m\n", T(S_WIFI_FAIL));
+        printf("%s\n", T(S_WIFI_FAIL2));
         while (aptMainLoop())
         {
             hidScanInput();
@@ -1683,6 +1947,7 @@ int main(int argc, char** argv)
             gspWaitForVBlank();
         }
         irrstExit();
+        gspLcdExit();
         gfxExit();
         return 0;
     }
@@ -1734,7 +1999,9 @@ int main(int argc, char** argv)
     u32 lastVideoFrames = (u32)-1;
     bool lastZoom = !g_zoom, lastHaveVideo = true;
     bool savedZoom = g_zoom;
-    int menuCursor = 0, menuTop = 0;
+    int menuCursor = 0, menuTop = 0, linkCursor = 0;
+    bool isNew3DS = false;
+    APT_CheckNew3DS(&isNew3DS);
     if (g_lastGame[0]) { int i = findGame(g_lastGame); if (i >= 0) menuCursor = i; }
     const int LIST_ROWS = 14;
     int redrawBoth = 2;
@@ -1764,13 +2031,93 @@ int main(int argc, char** argv)
             redrawBoth--;
         }
 
-        /* game list input */
+        /* ---------------- user interface ---------------- */
         u32 mk;
         LightLock_Lock(&g_lock);
         mk = g_menuKeys;
         g_menuKeys = 0;
         LightLock_Unlock(&g_lock);
-        if (g_menuOpen && mk)
+
+        bool askActive = g_askActive;
+        if (g_menuToggle)
+        {
+            /* SELECT + START tapped: open/close the melonDS Link menu */
+            g_menuToggle = false;
+            if (!askActive)
+            {
+                if (g_linkMenuOpen)
+                {
+                    g_linkMenuOpen = false;
+                    if (!g_gameStarted) g_menuOpen = true;
+                }
+                else
+                {
+                    g_linkMenuOpen = true;
+                    g_menuOpen = false;
+                    linkCursor = 0;
+                }
+            }
+            mk = 0;
+        }
+        /* whenever something is shown, the top screen has to be on */
+        if (g_topOff && (g_menuOpen || g_linkMenuOpen || askActive)) setTopBacklight(true);
+
+        enum { MI_GAMES, MI_DISPLAY, MI_TOPOFF, MI_SHOT, MI_LANG, MI_BACK, MI_QUIT, MI_COUNT };
+        if (askActive && mk)
+        {
+            if (mk & (KEY_A | KEY_B))
+            {
+                LightLock_Lock(&g_lock);
+                g_answerId = g_askId;
+                g_answerChoice = (mk & KEY_A) ? 0 : 1;
+                g_haveAnswer = true;
+                g_askActive = false;
+                LightLock_Unlock(&g_lock);
+            }
+        }
+        else if (g_linkMenuOpen && mk)
+        {
+            if (mk & (KEY_DUP | KEY_CPAD_UP)) linkCursor = (linkCursor + MI_COUNT - 1) % MI_COUNT;
+            if (mk & (KEY_DDOWN | KEY_CPAD_DOWN)) linkCursor = (linkCursor + 1) % MI_COUNT;
+            if (mk & KEY_B)
+            {
+                g_linkMenuOpen = false;
+                if (!g_gameStarted) g_menuOpen = true;
+            }
+            else if (mk & KEY_A)
+            {
+                switch (linkCursor)
+                {
+                case MI_GAMES: g_linkMenuOpen = false; g_menuOpen = true; break;
+                case MI_DISPLAY: g_zoom = !g_zoom; break;
+                case MI_TOPOFF:
+                    g_linkMenuOpen = false;
+                    if (!g_gameStarted) g_menuOpen = true;
+                    else setTopBacklight(false);
+                    break;
+                case MI_SHOT:
+                    LightLock_Lock(&g_lock);
+                    if (g_tcpConnected) { g_haveShot = true; snprintf(g_statusText, sizeof(g_statusText), "%s", T(S_SHOT_REQ)); }
+                    else snprintf(g_statusText, sizeof(g_statusText), "%s", T(S_NOT_CONNECTED));
+                    LightLock_Unlock(&g_lock);
+                    g_linkMenuOpen = false;
+                    if (!g_gameStarted) g_menuOpen = true;
+                    break;
+                case MI_LANG:
+                    g_lang = (g_lang + 1) % LANG_COUNT;
+                    applyLanguage();
+                    g_haveLangEvent = true;
+                    saveConfig();
+                    break;
+                case MI_BACK:
+                    g_linkMenuOpen = false;
+                    if (!g_gameStarted) g_menuOpen = true;
+                    break;
+                case MI_QUIT: g_running = false; break;
+                }
+            }
+        }
+        else if (g_menuOpen && mk)
         {
             if (mk & (KEY_DUP | KEY_CPAD_UP)) menuCursor--;
             if (mk & (KEY_DDOWN | KEY_CPAD_DOWN)) menuCursor++;
@@ -1795,35 +2142,72 @@ int main(int argc, char** argv)
             else if ((mk & KEY_B) && g_gameStarted) g_menuOpen = false;
         }
 
-        /* top screen: status */
-        char status[128], peer[32], game[128], xi[64];
+        /* ---------------- top screen ---------------- */
+        char status[128], game[128], xi[64], xi2[64];
         LightLock_Lock(&g_lock);
         snprintf(status, sizeof(status), "%s", g_statusText);
-        snprintf(peer, sizeof(peer), "%s", g_peerName);
         snprintf(game, sizeof(game), "%s", g_currentGame);
         snprintf(xi, sizeof(xi), "%s", g_xferInfo);
+        snprintf(xi2, sizeof(xi2), "%s", g_xferInfo2);
         LightLock_Unlock(&g_lock);
 
-        setLine(3, "IP-Adresse:  \x1b[33m%s", inet_ntoa(ip));
-        setLine(4, "melonDS:     %s", g_tcpConnected ? "\x1b[32mverbunden" : "\x1b[90mwartet...");
-        setLine(5, "Steuerung:   %s\x1b[0m   Bild: %s",
-                in.haveUdpPeer ? "\x1b[32maktiv" : "\x1b[90m-",
-                haveVideo ? "\x1b[32mok" : "\x1b[90m-");
-        setLine(6, "Anzeige:     %s", zoom ? "Vergroessert" : "Original (1:1)");
+        setLine(1, "\x1b[36m%s\x1b[0m  \x1b[90mv%u", T(S_TITLE), (unsigned)LINK_VERSION);
+        setLine(3, "%-12s \x1b[33m%s", T(S_IP), inet_ntoa(ip));
+        setLine(4, "%-12s %s%s", "melonDS:", g_tcpConnected ? "\x1b[32m" : "\x1b[90m", g_tcpConnected ? T(S_CONNECTED) : T(S_WAITING));
+        setLine(5, "%-12s %s%s\x1b[0m   %s %s%s", T(S_CONTROLS), in.haveUdpPeer ? "\x1b[32m" : "\x1b[90m",
+                in.haveUdpPeer ? T(S_ACTIVE) : "-", T(S_PICTURE), haveVideo ? "\x1b[32m" : "\x1b[90m", haveVideo ? "ok" : "-");
+        setLine(6, "%-12s %s", T(S_DISPLAY), zoom ? T(S_ENLARGED) : T(S_ORIGINAL));
         setLine(7, "\x1b[90m%.49s", xi);
         setLine(8, "\x1b[33m%.49s", status);
-        {
-            char xi2[64];
-            LightLock_Lock(&g_lock);
-            snprintf(xi2, sizeof(xi2), "%s", g_xferInfo2);
-            LightLock_Unlock(&g_lock);
-            setLine(9, "\x1b[90m%.49s", xi2);
-        }
+        setLine(9, "\x1b[90m%.49s", xi2);
 
-        /* top screen: game list or current game */
-        if (g_menuOpen)
+        if (askActive)
         {
-            setLine(10, "\x1b[36mSpiel waehlen\x1b[0m (%d in %.30s)", g_gameCount, g_romDir);
+            /* a question from melonDS */
+            char lines[ASK_LINES][52], a[48], b[48];
+            int count;
+            LightLock_Lock(&g_lock);
+            count = g_askLineCount;
+            memcpy(lines, g_askLines, sizeof(lines));
+            snprintf(a, sizeof(a), "%s", g_askA);
+            snprintf(b, sizeof(b), "%s", g_askB);
+            LightLock_Unlock(&g_lock);
+            for (int r = 0; r < 16; r++)
+            {
+                int row = 10 + r;
+                if (r < count) setLine(row, r == 0 ? "\x1b[36m%.49s" : "%.49s", lines[r]);
+                else if (r == count + 1) setLine(row, "\x1b[47;30m A \x1b[0m %.44s", a);
+                else if (r == count + 2) setLine(row, "\x1b[47;30m B \x1b[0m %.44s", b);
+                else setLine(row, "");
+            }
+            setLine(26, "\x1b[90m%s", T(S_ASK_HINT));
+        }
+        else if (g_linkMenuOpen)
+        {
+            setLine(10, "\x1b[36m%s", T(S_MENU_TITLE));
+            setLine(11, "");
+            for (int i = 0; i < MI_COUNT; i++)
+            {
+                char label[64];
+                switch (i)
+                {
+                case MI_GAMES: snprintf(label, sizeof(label), "%s", T(S_M_GAMES)); break;
+                case MI_DISPLAY: snprintf(label, sizeof(label), "%s: %s", T(S_M_DISPLAY), zoom ? T(S_ENLARGED) : T(S_ORIGINAL)); break;
+                case MI_TOPOFF: snprintf(label, sizeof(label), "%s", T(S_M_TOPOFF)); break;
+                case MI_SHOT: snprintf(label, sizeof(label), "%s", T(S_M_SHOT)); break;
+                case MI_LANG: snprintf(label, sizeof(label), "%s: %s", T(S_M_LANG), T(S_LANGNAME)); break;
+                case MI_BACK: snprintf(label, sizeof(label), "%s", T(S_M_BACK)); break;
+                default: snprintf(label, sizeof(label), "%s", T(S_M_QUIT)); break;
+                }
+                if (i == linkCursor) setLine(12 + i, "\x1b[47;30m> %-46.46s", label);
+                else setLine(12 + i, "  %-46.46s", label);
+            }
+            for (int r = 12 + MI_COUNT; r < 26; r++) setLine(r, "");
+            setLine(26, "\x1b[90m%s", T(S_MENU_HINT));
+        }
+        else if (g_menuOpen)
+        {
+            setLine(10, "\x1b[36m%s\x1b[0m (%d - %.30s)", T(S_PICK_GAME), g_gameCount, g_romDir);
             if (menuCursor < menuTop) menuTop = menuCursor;
             if (menuCursor >= menuTop + LIST_ROWS) menuTop = menuCursor - LIST_ROWS + 1;
             for (int r = 0; r < LIST_ROWS; r++)
@@ -1831,36 +2215,45 @@ int main(int argc, char** argv)
                 int i = menuTop + r;
                 if (i < g_gameCount)
                 {
-                    char name[64];
-                    snprintf(name, sizeof(name), "%s", g_games[i]);
+                    char name[300];
+                    utf8ToCp437(name, sizeof(name), g_games[i]);
                     size_t n = strlen(name);
-                    if (n > 4 && strcasecmp(name + n - 4, ".nds") == 0) name[n - 4] = '\0';
+                    if (n > 4 && strcasecmp(name + n - 4, ".nds") == 0) name[n -= 4] = '\0';
                     bool fav = isFav(g_games[i]);
                     LightLock_Lock(&g_lock);
                     bool pc = isOnPcLocked(g_games[i]);
                     LightLock_Unlock(&g_lock);
-                    /* "PC" at the end: already copied, starts right away */
-                    if (i == menuCursor) setLine(11 + r, "\x1b[47;30m>%c%-44.44s%s", fav ? '*' : ' ', name, pc ? " PC" : "   ");
-                    else if (fav) setLine(11 + r, "\x1b[33m*\x1b[0m %-44.44s\x1b[32m%s", name, pc ? " PC" : "");
-                    else setLine(11 + r, "  %-44.44s\x1b[32m%s", name, pc ? " PC" : "");
+                    const char* shown = name;
+                    if (i == menuCursor && n > 44)
+                    {
+                        /* too long: the selected name scrolls (pauses at both ends) */
+                        int steps = (int)(n - 44);
+                        int t = (int)((osGetTime() / 200) % (u64)(steps + 12));
+                        int off = t < 6 ? 0 : t < 6 + steps ? t - 6 : steps;
+                        shown = name + off;
+                    }
+                    if (i == menuCursor) setLine(11 + r, "\x1b[47;30m>%c%-44.44s%s", fav ? '*' : ' ', shown, pc ? " PC" : "   ");
+                    else if (fav) setLine(11 + r, "\x1b[33m*\x1b[0m %-44.44s\x1b[32m%s", shown, pc ? " PC" : "");
+                    else setLine(11 + r, "  %-44.44s\x1b[32m%s", shown, pc ? " PC" : "");
                 }
                 else if (r == 0 && g_gameCount == 0)
-                    setLine(11 + r, "\x1b[31m  Keine .nds-Dateien gefunden.");
+                    setLine(11 + r, "\x1b[31m  %s", T(S_NO_GAMES));
                 else setLine(11 + r, "");
             }
-            setLine(26, "\x1b[90mA starten X Favorit Y neu%s  \x1b[32mPC\x1b[90m=kopiert", g_gameStarted ? " B zurueck" : "");
+            setLine(25, "\x1b[32m%s", T(S_PC_COPIED));
+            setLine(26, "\x1b[90m%s", g_gameStarted ? T(S_LIST_HINT_BACK) : T(S_LIST_HINT));
         }
         else
         {
-            setLine(10, "\x1b[36mLaeuft:\x1b[0m %.40s", game);
-            for (int r = 0; r < LIST_ROWS; r++) setLine(11 + r, "");
-            setLine(26, "");
+            char g[130];
+            utf8ToCp437(g, sizeof(g), game);
+            setLine(10, "\x1b[36m%s\x1b[0m %.40s", T(S_RUNNING), g);
+            for (int r = 11; r <= 26; r++) setLine(r, "");
         }
 
-        setLine(27, "\x1b[90mC-Stick runter = Spieleliste");
-        setLine(28, "\x1b[90mC-Stick hoch = Original / Vergroessert");
-        setLine(29, "\x1b[90mIn melonDS: 3DS Link > Mit 3DS verbinden");
-        setLine(30, "\x1b[90mSELECT + START halten = Beenden");
+        setLine(28, "\x1b[90m%s", T(S_HINT_MENU));
+        setLine(29, "\x1b[90m%s", isNew3DS ? T(S_HINT_CSTICK) : "");
+        setLine(30, "\x1b[90m%s", g_tcpConnected ? "" : T(S_HINT_CONNECT));
 
         gfxFlushBuffers();
         gfxSwapBuffers();
@@ -1881,6 +2274,8 @@ int main(int argc, char** argv)
     close(g_videoFd);
     socExit();
     irrstExit();
+    setTopBacklight(true);
+    gspLcdExit();
     gfxExit();
     return 0;
 }

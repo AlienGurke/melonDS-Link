@@ -21,6 +21,19 @@ beschädigt. Ist der 3DS gerade nicht erreichbar, holt melonDS das nach. Die let
 5 Versionen liegen zusätzlich in `melonDS-Link/Backups/<Spiel>/` im melonDS-Ordner
 (in melonDS: **3DS Link → Backup- und ROM-Ordner öffnen**).
 
+**Welcher Spielstand gilt?** melonDS merkt sich (in `melonDS-Link/Sync/`), welcher Spielstand
+beim letzten Abgleich auf beiden Seiten war. Beim Spielstart:
+- beide gleich, oder nur auf dem 3DS weitergespielt → der 3DS-Spielstand wird genommen, ohne Frage;
+- am PC geändert (z. B. ohne 3DS in melonDS gespielt) → **auf dem 3DS** kommt eine Frage:
+  **A** = PC-Spielstand nehmen (wird auf den 3DS kopiert), **B** = 3DS-Spielstand behalten.
+  Der jeweils andere landet als Backup am PC. Beim ersten Start mit dieser Version kann die
+  Frage einmal kommen, wenn sich die beiden Spielstände unterscheiden.
+
+**Backup zurückspielen:** im ROM-Fenster (siehe unten) genau ein Spiel anhaken →
+**Backups…** → Eintrag wählen → **Auf den 3DS übertragen**. Der Spielstand, der vorher
+auf dem 3DS war, wird dabei selbst als Backup aufgehoben. Geht nicht, solange genau dieses
+Spiel in melonDS läuft.
+
 **Spieleliste:** zeigt alle `.nds` aus `/roms/nds` (änderbar: `romdir=` in
 `sd:/3ds/melonDS-Link.cfg`). Steuerkreuz/Circle Pad wählen, L/R blättern,
 A startet, X markiert als Favorit (steht dann mit * oben), Y lädt die Liste neu,
@@ -29,7 +42,7 @@ Favoriten: `sd:/3ds/melonDS-Link-favoriten.txt`. **C-Stick nach unten** öffnet 
 Liste jederzeit; solange sie offen ist, bekommt das Spiel keine Eingaben.
 Spiele mit grünem **PC** am Ende liegen schon vollständig auf dem PC und starten sofort.
 
-**ROMs vorab kopieren:** in melonDS **3DS Link → ROMs vom 3DS (vorab kopieren)…**.
+**ROMs vorab kopieren:** in melonDS **3DS Link → ROMs und Spielstände vom 3DS…**.
 Das Fenster zeigt alle Spiele des 3DS mit Status (*auf dem PC*, *angefangen*, *fehlt*).
 „Alle fehlenden kopieren“ oder einzelne anhaken. Anhalten ist jederzeit möglich –
 der kopierte Teil bleibt erhalten und wird beim nächsten Mal fortgesetzt (auch beim
@@ -62,12 +75,33 @@ gibt es keine halb alten, halb neuen Bilder. Die Datenrate passt sich ans WLAN a
 | Start / Select | Start / Select               |
 | Steuerkreuz / Circle Pad | Steuerkreuz        |
 | Touchscreen    | Touchscreen (passend zum Anzeigemodus) |
+| SELECT + START kurz | melonDS-Link-Menü       |
 | C-Stick hoch   | Original / Vergrößert        |
 | C-Stick runter | Spieleliste                  |
 | ZR (halten)    | Vorspulen                    |
 | ZL             | Bildschirme tauschen         |
 
-**Beenden:** SELECT + START ca. 1 Sekunde halten.
+**melonDS-Link-Menü:** SELECT + START kurz zusammen drücken (das Spiel bekommt dabei
+nichts davon mit). Darin: Spieleliste, Anzeige (Vergrößert/Original), oberen Bildschirm
+ausschalten (spart Akku, geht beim nächsten Menü wieder an), Screenshot, Sprache, zurück, beenden.
+So ist alles auch ohne C-Stick erreichbar (alter 3DS / 2DS).
+
+**Screenshots:** im Menü *Screenshot* wählen – melonDS speichert beide DS-Bildschirme in
+der Auflösung, in der es sie berechnet (mit Hochskalierung und Texturfilter), als PNG in
+`melonDS-Link/Screenshots/` (in melonDS: **3DS Link → Screenshot-Ordner öffnen**).
+
+**Lange Namen** laufen in der Spieleliste durch, wenn sie ausgewählt sind.
+
+**Sprache:** Englisch ist Standard, Deutsch wählbar – am 3DS im Menü (*Language/Sprache*),
+in melonDS unter **3DS Link → Language**. Beide Einstellungen werden gespeichert; Texte, die
+melonDS auf dem 3DS anzeigt (Status, Fragen), kommen in der Sprache des 3DS. Die Texte
+stehen zum Anpassen in `melonDS-Link/Language/*.txt` (PC; eine neue Datei, z. B. `fr.txt`,
+erscheint als weitere Sprache) und `sd:/3ds/melonDS-Link/Language/*.txt` (3DS).
+
+**Debug:** WLAN-Test, SD-Karten-Test und das Log (`melonDS-Link/Debug/link-log.txt`)
+sind unter **3DS Link → Debug**.
+
+**Beenden:** SELECT + START ca. 1 Sekunde halten (oder im Menü *Beenden*).
 
 ## Bauen
 Mit devkitPro/devkitARM: `make -C link3ds`. GitHub Actions baut die App
