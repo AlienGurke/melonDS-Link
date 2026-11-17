@@ -134,6 +134,9 @@ public:
     // the user wants the game ended / is back in the game (3DS menu)
     bool TakeStopRequest() { return stopWanted.exchange(false); }
     bool TakeResumeRequest() { return resumeWanted.exchange(false); }
+    // save backups asked for on the 3DS: list them / load one (index + token of the list)
+    bool TakeBackupListRequest(std::string& romPath);
+    bool TakeRestoreRequest(std::string& romPath, int& index, uint32_t& token);
 
     // show a message in melonDS (thread-safe)
     void PostMessage(const std::string& msg) { pushMessage(msg); }
@@ -177,6 +180,10 @@ private:
     std::atomic<bool> resumeWanted { false };
     std::atomic<bool> videoWanted { true };   // bottom screen picture on (3DS setting)
     std::string remoteLang = "en";
+    bool haveBakList = false, haveRestore = false;
+    std::string bakListRom, restoreRom;
+    int restoreIndex = 0;
+    uint32_t restoreToken = 0;
 
     // video: latest frame waiting to be sent + what the 3DS should have
     std::mutex videoMutex;

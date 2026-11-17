@@ -503,6 +503,20 @@ void Client::pollEvents()
         return;
     }
     if (ev.type == LINK_EVENT_STOPGAME) { stopWanted = true; return; }
+    if (ev.type == LINK_EVENT_BACKUPS || ev.type == LINK_EVENT_RESTORE)
+    {
+        std::string rom((const char*)out.data() + sizeof(ev), ev.romPathLen);
+        std::lock_guard<std::mutex> lock(eventMutex);
+        if (ev.type == LINK_EVENT_BACKUPS) { bakListRom = rom; haveBakList = true; }
+        else
+        {
+            restoreRom = rom;
+            restoreIndex = (int)ev.reserved;
+            restoreToken = (uint32_t)ev.romSize;
+            haveRestore = true;
+        }
+        return;
+    }
     if (ev.type == LINK_EVENT_RESUME) { resumeWanted = true; return; }
     if (ev.type == LINK_EVENT_VIDEO)
     {
@@ -544,6 +558,26 @@ void Client::CancelAsk(uint32_t id)
 {
     uint16_t status;
     Request(LINK_CMD_ASK, &id, 4, status);
+}
+
+bool Client::TakeBackupListRequest(std::string& romPath)
+{
+    std::lock_guard<std::mutex> lock(eventMutex);
+    if (!haveBakList) return false;
+    romPath = bakListRom;
+    haveBakList = false;
+    return true;
+}
+
+bool Client::TakeRestoreRequest(std::string& romPath, int& index, uint32_t& token)
+{
+    std::lock_guard<std::mutex> lock(eventMutex);
+    if (!haveRestore) return false;
+    romPath = restoreRom;
+    index = restoreIndex;
+    token = restoreToken;
+    haveRestore = false;
+    return true;
 }
 
 bool Client::TakeAnswer(uint32_t id, int& choice)

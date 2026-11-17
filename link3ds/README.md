@@ -29,7 +29,11 @@ beim letzten Abgleich auf beiden Seiten war. Beim Spielstart:
   Der jeweils andere landet als Backup am PC. Beim ersten Start mit dieser Version kann die
   Frage einmal kommen, wenn sich die beiden Spielstände unterscheiden.
 
-**Backup zurückspielen:** im ROM-Fenster (siehe unten) genau ein Spiel anhaken →
+**Backup zurückspielen – am 3DS:** SELECT + START → **Spielstand-Backups: <Spiel>**
+(das laufende Spiel, sonst das in der Spieleliste markierte) → Eintrag wählen (A) →
+mit **L + R + A** bestätigen. Läuft das Spiel gerade, beendet melonDS es dafür (der
+Spielstand wird vorher noch gesichert).
+**– am PC:** im ROM-Fenster (siehe unten) genau ein Spiel anhaken →
 **Backups…** → Eintrag wählen → **Auf den 3DS übertragen**. Der Spielstand, der vorher
 auf dem 3DS war, wird dabei selbst als Backup aufgehoben. Geht nicht, solange genau dieses
 Spiel in melonDS läuft.
@@ -89,6 +93,7 @@ nichts davon mit). Es zeigt nur, was gerade passt:
 - *Bild unten an/aus*: aus = melonDS schickt kein Bild mehr, der untere 3DS-Bildschirm
   wird dunkel, Touch und Tasten funktionieren weiter (wird gespeichert, Standard: an)
 - *Oberen Bildschirm ausschalten* (spart Akku, geht beim nächsten Menü wieder an)
+- *Spielstand-Backups* (siehe oben)
 - *Sprache*
 - *Spiel am PC beenden* (mit Rückfrage; der Spielstand wird dabei noch geschrieben)
 - *App beenden* (mit Rückfrage, wenn ein Spiel läuft oder gerade gespeichert wird)
@@ -96,10 +101,12 @@ nichts davon mit). Es zeigt nur, was gerade passt:
 Nach einer Aktion wie Screenshot geht es zurück ins Spiel, nicht in die Spieleliste.
 Alles ist auch ohne C-Stick erreichbar (alter 3DS / 2DS).
 
-**Schutz vor Versehen:**
+**Schutz vor Versehen:** Alles, was sich nicht rückgängig machen lässt (anderes Spiel
+starten, Spiel am PC beenden, Backup laden, App beenden), wird mit **L + R + A**
+bestätigt – ein einfaches A reicht dort nicht. **B** bricht ab.
 - Wählst du in der Spieleliste das Spiel, das gerade läuft, geht es einfach zurück ins
   Spiel – es wird nie neu gestartet. Ein *anderes* Spiel startet erst nach einer Rückfrage
-  (nicht gespeicherter Fortschritt ginge verloren).
+  (nicht gespeicherter Fortschritt ginge verloren), mit L + R + A.
 - Geht die Verbindung verloren (App beendet, WLAN weg), pausiert melonDS das Spiel und
   macht weiter, sobald du am 3DS wieder im Spiel bist (abschaltbar in melonDS:
   **3DS Link → Spiel pausieren, wenn der 3DS getrennt wird**).

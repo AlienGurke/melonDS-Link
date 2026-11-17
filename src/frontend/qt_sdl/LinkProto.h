@@ -22,7 +22,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        12u
+#define LINK_VERSION        13u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -77,6 +77,9 @@ enum LinkCommand
     LINK_CMD_SESSION    = 21,/* in: u8 flags (LINK_SESSION_*) + UTF-8 name of the game
                                 running in melonDS (empty = none). Sent on connect and
                                 whenever it changes. */
+    LINK_CMD_BACKUPLIST = 22,/* in: u32 token + UTF-8 text: first line the ROM path it
+                                belongs to, then one line per save backup on the PC
+                                (newest first). Answer to LINK_EVENT_BACKUPS. */
 };
 
 #define LINK_SESSION_LAUNCH_DONE 1u   /* a game picked on the 3DS was handled (started or failed) */
@@ -107,6 +110,9 @@ enum LinkEventType
     LINK_EVENT_STOPGAME = 5, /* the user wants the game in melonDS ended */
     LINK_EVENT_RESUME = 6,   /* the user is back in the game (melonDS may unpause) */
     LINK_EVENT_VIDEO = 7,    /* bottom screen picture: reserved = 1 on, 0 off */
+    LINK_EVENT_BACKUPS = 8,  /* list the save backups of a game: ROM path as the ROM path */
+    LINK_EVENT_RESTORE = 9,  /* load a backup onto the 3DS: ROM path, reserved = index in
+                                the list, romSize = token of the list */
 };
 
 enum LinkStatus

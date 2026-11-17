@@ -2085,6 +2085,25 @@ void MainWindow::onLinkTick()
         emuInstance->osdAddMessage(0, "%s", Link::TrS("stop.done").c_str());
     }
 
+    // save backups from the 3DS menu
+    {
+        std::string rom;
+        int index;
+        uint32_t token;
+        if (Link::Get().TakeBackupListRequest(rom)) Link::Session::Get().SendBackupList(rom);
+        if (Link::Get().TakeRestoreRequest(rom, index, token))
+        {
+            // loading a backup of the running game ends it first (its save is written on the way out)
+            std::string name = rom.substr(rom.find_last_of('/') + 1);
+            if (!linkRunningGame().empty() && linkRunningGame() == name.substr(0, name.rfind('.')))
+            {
+                linkPausedByLoss = false;
+                emuThread->emuStop(true);
+            }
+            Link::Session::Get().RestoreFrom3ds(rom, index, token);
+        }
+    }
+
     // the 3DS always knows which game runs here (after reconnects, too)
     {
         static std::string sentGame = "\x01";

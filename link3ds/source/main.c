@@ -88,6 +88,8 @@ enum StrId
     S_M_BOTTOM, S_ON, S_OFF, S_M_STOP, S_D_RESUME_T, S_D_CONTINUE, S_D_LIST, S_D_LOST, S_D_START,
     S_D_BACK, S_D_STOP_T, S_D_STOP_A, S_D_QUIT_T, S_D_QUIT_1, S_D_SAVING, S_D_QUIT_A, S_STOPPING,
     S_D_SWITCH_T,
+    S_M_BACKUPS, S_B_LOADING, S_B_NONE, S_B_HINT, S_D_RESTORE_T, S_D_RESTORE_1, S_D_RESTORE_2,
+    S_D_RESTORE_A, S_RESTORING, S_CONFIRM_HINT,
     S_COUNT
 };
 
@@ -108,6 +110,10 @@ static const char* const g_strs[LANG_COUNT][S_COUNT] = {
         "End the game in melonDS?", "End the game", "Quit melonDS Link?",
         "melonDS pauses the game until you connect again.", "A save is being written right now!",
         "Quit", "Ending the game...", "Start another game?",
+        "Save backups", "Getting the list from the PC...", "No backups of this game on the PC.",
+        "A load   B back", "Load this backup onto the 3DS?", "The current save is kept as a backup.",
+        "The game in melonDS is ended for this.", "Load backup", "Loading the backup...",
+        "L+R+A confirm   B back",
     },
     {   /* Deutsch */
         "melonDS Link", "IP-Adresse:", "verbunden", "wartet...", "Steuerung:", "aktiv", "Bild:",
@@ -126,6 +132,10 @@ static const char* const g_strs[LANG_COUNT][S_COUNT] = {
         "Spiel in melonDS beenden?", "Spiel beenden", "melonDS Link beenden?",
         "melonDS pausiert das Spiel, bis du wieder verbindest.", "Gerade wird ein Spielstand geschrieben!",
         "Beenden", "Spiel wird beendet...", "Ein anderes Spiel starten?",
+        "Spielstand-Backups", "Hole die Liste vom PC...", "Keine Backups von diesem Spiel am PC.",
+        "A laden   B zurück", "Dieses Backup auf den 3DS laden?", "Der aktuelle Spielstand wird als Backup aufgehoben.",
+        "Das Spiel in melonDS wird dafür beendet.", "Backup laden", "Backup wird geladen...",
+        "L+R+A bestätigen   B zurück",
     },
 };
 static char g_tr[S_COUNT][80];   /* current language, already in code page 437 */
@@ -142,6 +152,8 @@ static const char* const g_strKeys[S_COUNT] = {
     "menu_bottom", "on", "off", "menu_stop", "resume_title", "continue", "game_list", "progress_lost", "start",
     "back", "stop_title", "stop_confirm", "quit_title", "quit_note", "saving_now", "quit_confirm", "stopping",
     "switch_title",
+    "menu_backups", "backups_loading", "backups_none", "backups_hint", "restore_title", "restore_note",
+    "restore_note_running", "restore_confirm", "restoring", "confirm_hint",
 };
 #define LANG_FILE_VERSION 2   /* files of an older version are written anew */
 static char g_custom[LANG_COUNT][S_COUNT][80];   /* from the files ("" = built-in) */
@@ -365,7 +377,7 @@ static volatile bool g_menuOpen = true;      /* game list shown, input not sent 
 static volatile bool g_gameStarted = false;
 static char g_currentGame[128] = "";
 /* dialogs of the 3DS app itself (A / B), shown like the questions from melonDS */
-enum { LA_NONE, LA_RESUME, LA_SWITCH, LA_STOP, LA_QUIT };
+enum { LA_NONE, LA_RESUME, LA_SWITCH, LA_STOP, LA_QUIT, LA_RESTORE };
 static volatile int g_localAsk = LA_NONE;
 static int g_switchIdx = 0;                      /* LA_SWITCH: the game to start */
 static volatile bool g_launchPending = false;    /* picked a game, melonDS has not answered yet */
@@ -376,6 +388,15 @@ static volatile bool g_videoOff = false;         /* bottom screen picture off (s
 static volatile bool g_haveStopEv = false, g_haveResumeEv = false, g_haveVideoEv = false;
 static volatile bool g_saveWriting = false;      /* a save is between WRITE and REPLACE */
 static volatile u64 g_saveWriteTime = 0;
+static volatile bool g_confirmPress = false;     /* L + R + A pressed (input -> main) */
+/* save backups on the PC, listed on the 3DS (guarded by g_lock) */
+#define BAK_MAX 14
+static volatile bool g_bakOpen = false, g_bakWaiting = false;
+static char g_bakRom[LINK_MAX_PATH];             /* ROM path the list is for */
+static char g_bakLines[BAK_MAX][48];
+static int g_bakCount = 0, g_bakCursor = 0, g_restoreIdx = 0;
+static u32 g_bakToken = 0;
+static bool g_haveBakReqEv = false, g_haveRestoreEv = false;
 
 /* pending launch for melonDS (guarded by g_lock) */
 static bool g_haveEvent = false;
@@ -1012,7 +1033,8 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             used += g_event.savePathLen;
             g_haveEvent = false;
         }
-        else if (g_haveAnswer || g_haveShot || g_haveLangEvent || g_haveStopEv || g_haveResumeEv || g_haveVideoEv)
+        else if (g_haveAnswer || g_haveShot || g_haveLangEvent || g_haveStopEv || g_haveResumeEv || g_haveVideoEv ||
+                 g_haveBakReqEv || g_haveRestoreEv)
         {
             LinkEvent ev;
             memset(&ev, 0, sizeof(ev));
@@ -1033,6 +1055,19 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
                 g_haveVideoEv = false;
             }
             else if (g_haveResumeEv) { ev.type = LINK_EVENT_RESUME; g_haveResumeEv = false; }
+            else if (g_haveBakReqEv || g_haveRestoreEv)
+            {
+                if (g_haveRestoreEv)
+                {
+                    ev.type = LINK_EVENT_RESTORE;
+                    ev.reserved = (u32)g_restoreIdx;
+                    ev.romSize = g_bakToken;
+                    g_haveRestoreEv = false;
+                }
+                else { ev.type = LINK_EVENT_BACKUPS; g_haveBakReqEv = false; }
+                text = g_bakRom;
+                ev.romPathLen = (uint16_t)strlen(text);
+            }
             else
             {
                 ev.type = LINK_EVENT_LANGUAGE;
@@ -1103,6 +1138,37 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         utf8ToCp437(g_askB, sizeof(g_askB), lines[count - 1]);
         g_askId = id;
         g_askActive = true;
+        LightLock_Unlock(&g_lock);
+        return sendResponse(fd, h, LINK_OK, NULL, 0);
+    }
+
+    case LINK_CMD_BACKUPLIST:
+    {
+        if (h->len < 4) return sendResponse(fd, h, LINK_ERR_BADARGS, NULL, 0);
+        static char text[4096];
+        u32 token;
+        memcpy(&token, payload, 4);
+        size_t n = h->len - 4 < sizeof(text) - 1 ? h->len - 4 : sizeof(text) - 1;
+        memcpy(text, payload + 4, n);
+        text[n] = 0;
+        char* nl = strchr(text, '\n');
+        if (nl) *nl = 0;
+        LightLock_Lock(&g_lock);
+        if (g_bakWaiting && strcmp(text, g_bakRom) == 0)
+        {
+            g_bakToken = token;
+            g_bakCount = 0;
+            for (char* q = nl ? nl + 1 : NULL; q && *q && g_bakCount < BAK_MAX; )
+            {
+                char* e = strchr(q, '\n');
+                if (e) *e = 0;
+                utf8ToCp437(g_bakLines[g_bakCount], sizeof(g_bakLines[0]), q);
+                g_bakCount++;
+                q = e ? e + 1 : NULL;
+            }
+            g_bakCursor = 0;
+            g_bakWaiting = false;
+        }
         LightLock_Unlock(&g_lock);
         return sendResponse(fd, h, LINK_OK, NULL, 0);
     }
@@ -1736,6 +1802,8 @@ static void inputThread(void* arg)
     bool cstickUpWas = false;
     u32 prevHeld = 0;
     int heloCheck = 0;
+    u64 upSince[32];          /* per key: since when it is released */
+    for (int i = 0; i < 32; i++) upSince[i] = 0;
 
     while (g_running)
     {
@@ -1759,18 +1827,33 @@ static void inputThread(void* arg)
         }
 
         /* C-stick up toggles zoom */
-        bool cup = (held & KEY_CSTICK_UP) != 0;
-        if (cup && !cstickUpWas) g_zoom = !g_zoom;
-        cstickUpWas = cup;
+        (void)cstickUpWas;
+
+        /* presses for the menus: a key only counts as pressed again after it was
+           really released (>= 60 ms). Reading the buttons can now and then give
+           one stale sample, which would otherwise count as a second press. */
+        u32 down = 0;
+        {
+            u64 now = osGetTime();
+            u32 rawDown = held & ~prevHeld, rawUp = prevHeld & ~held;
+            for (int b = 0; b < 32; b++)
+            {
+                u32 bit = 1u << b;
+                if (rawUp & bit) upSince[b] = now;
+                if ((rawDown & bit) && now - upSince[b] >= 60) down |= bit;
+            }
+        }
+        prevHeld = held;
+        /* L + R + A: confirmation for things that cannot be undone */
+        if ((down & KEY_A) && (held & KEY_L) && (held & KEY_R)) g_confirmPress = true;
 
         /* C-stick down opens/closes the game list */
-        u32 down = held & ~prevHeld;
-        prevHeld = held;
         bool dialog = g_askActive || g_localAsk != LA_NONE;
-        bool capture = g_menuOpen || g_linkMenuOpen || dialog;
+        bool capture = g_menuOpen || g_linkMenuOpen || g_bakOpen || dialog;
+        if ((down & KEY_CSTICK_UP) && !dialog) g_zoom = !g_zoom;
         if ((down & KEY_CSTICK_DOWN) && !dialog)
         {
-            if (!g_menuOpen) { g_menuOpen = true; g_linkMenuOpen = false; }
+            if (!g_menuOpen) { g_menuOpen = true; g_linkMenuOpen = false; g_bakOpen = false; }
             else if (g_gameStarted) g_menuOpen = false;
         }
         else if (capture)
@@ -2136,6 +2219,8 @@ int main(int argc, char** argv)
         LightLock_Lock(&g_lock);
         mk = g_menuKeys;
         g_menuKeys = 0;
+        bool confirm = g_confirmPress;
+        g_confirmPress = false;
         LightLock_Unlock(&g_lock);
 
         /* news from melonDS about the running game */
@@ -2195,12 +2280,24 @@ int main(int argc, char** argv)
         setBottomBacklight(!g_videoOff);
 
         /* the menu: only what makes sense right now */
-        enum { MI_BACK, MI_GAMES, MI_SHOT, MI_DISPLAY, MI_BOTTOM, MI_TOPOFF, MI_LANG, MI_STOP, MI_QUIT };
+        enum { MI_BACK, MI_GAMES, MI_SHOT, MI_BACKUPS, MI_DISPLAY, MI_BOTTOM, MI_TOPOFF, MI_LANG, MI_STOP, MI_QUIT };
         int items[12], itemCount = 0;
         bool playing = g_gameStarted && !g_launchPending;
         if (g_gameStarted) items[itemCount++] = MI_BACK;
         items[itemCount++] = MI_GAMES;
         if (playing && g_tcpConnected) items[itemCount++] = MI_SHOT;
+        /* backups: of the running game, else of the game selected in the list */
+        int bakGame = -1;
+        if (g_gameStarted)
+        {
+            for (int i = 0; i < g_gameCount && bakGame < 0; i++)
+            {
+                size_t l = strlen(g_games[i]);
+                if (l > 4 && strlen(g_currentGame) == l - 4 && strncmp(g_games[i], g_currentGame, l - 4) == 0) bakGame = i;
+            }
+        }
+        else if (menuCursor >= 0 && menuCursor < g_gameCount) bakGame = menuCursor;
+        if (bakGame >= 0 && g_tcpConnected && !g_launchPending) items[itemCount++] = MI_BACKUPS;
         items[itemCount++] = MI_DISPLAY;
         items[itemCount++] = MI_BOTTOM;
         items[itemCount++] = MI_TOPOFF;
@@ -2225,9 +2322,11 @@ int main(int argc, char** argv)
                 LightLock_Unlock(&g_lock);
             }
         }
-        else if (localAsk != LA_NONE && mk)
+        else if (localAsk != LA_NONE && (mk || confirm))
         {
-            bool yes = (mk & KEY_A) != 0, no = (mk & KEY_B) != 0;
+            /* things that cannot be undone need L + R + A, the rest plain A */
+            bool strong = localAsk != LA_RESUME;
+            bool yes = strong ? confirm : (mk & KEY_A) != 0, no = (mk & KEY_B) != 0;
             if (yes || no)
             {
                 g_localAsk = LA_NONE;
@@ -2252,6 +2351,17 @@ int main(int argc, char** argv)
                     break;
                 case LA_QUIT:
                     if (yes) g_running = false;
+                    break;
+                case LA_RESTORE:
+                    if (yes)
+                    {
+                        LightLock_Lock(&g_lock);
+                        g_haveRestoreEv = true;
+                        snprintf(g_statusText, sizeof(g_statusText), "%s", T(S_RESTORING));
+                        LightLock_Unlock(&g_lock);
+                        g_bakOpen = false;
+                        if (!g_gameStarted) g_menuOpen = true;
+                    }
                     break;
                 }
             }
@@ -2295,6 +2405,17 @@ int main(int argc, char** argv)
                     saveConfig();
                     break;
                 case MI_STOP: g_localAsk = LA_STOP; break;
+                case MI_BACKUPS:
+                    LightLock_Lock(&g_lock);
+                    snprintf(g_bakRom, sizeof(g_bakRom), "%.100s/%.150s", g_romDir, g_games[bakGame]);
+                    g_bakCount = 0;
+                    g_bakCursor = 0;
+                    g_bakWaiting = true;
+                    g_haveBakReqEv = true;
+                    LightLock_Unlock(&g_lock);
+                    g_linkMenuOpen = false;
+                    g_bakOpen = true;
+                    break;
                 case MI_QUIT:
                     /* with a game running (or a save on its way) ask first */
                     if (g_gameStarted || g_saveWriting) g_localAsk = LA_QUIT;
@@ -2302,6 +2423,20 @@ int main(int argc, char** argv)
                     break;
                 }
             }
+        }
+        else if (g_bakOpen && mk)
+        {
+            LightLock_Lock(&g_lock);
+            if (g_bakCount > 0)
+            {
+                if (mk & (KEY_DUP | KEY_CPAD_UP)) g_bakCursor = (g_bakCursor + g_bakCount - 1) % g_bakCount;
+                if (mk & (KEY_DDOWN | KEY_CPAD_DOWN)) g_bakCursor = (g_bakCursor + 1) % g_bakCount;
+            }
+            bool pick = (mk & KEY_A) && g_bakCount > 0 && !g_bakWaiting;
+            if (pick) g_restoreIdx = g_bakCursor;
+            LightLock_Unlock(&g_lock);
+            if (pick) g_localAsk = LA_RESTORE;
+            else if (mk & KEY_B) { g_bakOpen = false; g_bakWaiting = false; g_linkMenuOpen = true; }
         }
         else if (g_menuOpen && mk)
         {
@@ -2368,6 +2503,7 @@ int main(int argc, char** argv)
 
         if (askActive || localAsk != LA_NONE)
         {
+            bool strongAsk = !askActive && localAsk != LA_RESUME;
             char lines[ASK_LINES][52], a[48], b[48];
             int count = 0;
             if (askActive)
@@ -2408,6 +2544,16 @@ int main(int argc, char** argv)
                     snprintf(a, sizeof(a), "%s", T(S_D_STOP_A));
                     snprintf(b, sizeof(b), "%s", T(S_D_BACK));
                     break;
+                case LA_RESTORE:
+                    LightLock_Lock(&g_lock);
+                    snprintf(lines[count++], 52, "%s", T(S_D_RESTORE_T));
+                    snprintf(lines[count++], 52, "%.49s", g_restoreIdx < g_bakCount ? g_bakLines[g_restoreIdx] : "");
+                    LightLock_Unlock(&g_lock);
+                    snprintf(lines[count++], 52, "%.49s", T(S_D_RESTORE_1));
+                    if (g_gameStarted) snprintf(lines[count++], 52, "%.49s", T(S_D_RESTORE_2));
+                    snprintf(a, sizeof(a), "%s", T(S_D_RESTORE_A));
+                    snprintf(b, sizeof(b), "%s", T(S_D_BACK));
+                    break;
                 default:
                     snprintf(lines[count++], 52, "%s", T(S_D_QUIT_T));
                     if (g_saveWriting) snprintf(lines[count++], 52, "\x1b[31m%.44s\x1b[0m", T(S_D_SAVING));
@@ -2421,11 +2567,13 @@ int main(int argc, char** argv)
             {
                 int row = 10 + r;
                 if (r < count) setLine(row, r == 0 ? "\x1b[36m%.49s" : "%.49s", lines[r]);
+                else if (r == count + 1 && strongAsk) setLine(row, "\x1b[47;30m L+R+A \x1b[0m %.40s", a);
                 else if (r == count + 1) setLine(row, "\x1b[47;30m A \x1b[0m %.44s", a);
+                else if (r == count + 2 && strongAsk) setLine(row, "\x1b[47;30m   B   \x1b[0m %.40s", b);
                 else if (r == count + 2) setLine(row, "\x1b[47;30m B \x1b[0m %.44s", b);
                 else setLine(row, "");
             }
-            setLine(26, "\x1b[90m%s", T(S_ASK_HINT));
+            setLine(26, "\x1b[90m%s", strongAsk ? T(S_CONFIRM_HINT) : T(S_ASK_HINT));
         }
         else if (g_linkMenuOpen)
         {
@@ -2444,6 +2592,14 @@ int main(int argc, char** argv)
                 case MI_TOPOFF: snprintf(label, sizeof(label), "%s", T(S_M_TOPOFF)); break;
                 case MI_LANG: snprintf(label, sizeof(label), "%s: %s", T(S_M_LANG), T(S_LANGNAME)); break;
                 case MI_STOP: snprintf(label, sizeof(label), "%s", T(S_M_STOP)); break;
+                case MI_BACKUPS:
+                {
+                    char nm[300];
+                    utf8ToCp437(nm, sizeof(nm), bakGame >= 0 ? g_games[bakGame] : "");
+                    if (strlen(nm) > 4) nm[strlen(nm) - 4] = 0;
+                    snprintf(label, sizeof(label), "%s: %.26s", T(S_M_BACKUPS), nm);
+                    break;
+                }
                 default: snprintf(label, sizeof(label), "%s", T(S_M_QUIT)); break;
                 }
                 if (i == linkCursor) setLine(12 + i, "\x1b[47;30m> %-46.46s", label);
@@ -2451,6 +2607,27 @@ int main(int argc, char** argv)
             }
             for (int r = 12 + itemCount; r < 26; r++) setLine(r, "");
             setLine(26, "\x1b[90m%s", T(S_MENU_HINT));
+        }
+        else if (g_bakOpen)
+        {
+            char nm[300];
+            LightLock_Lock(&g_lock);
+            const char* file = strrchr(g_bakRom, '/');
+            utf8ToCp437(nm, sizeof(nm), file ? file + 1 : g_bakRom);
+            if (strlen(nm) > 4) nm[strlen(nm) - 4] = 0;
+            setLine(10, "\x1b[36m%s\x1b[0m %.30s", T(S_M_BACKUPS), nm);
+            for (int r = 0; r < 14; r++)
+            {
+                int row = 11 + r;
+                if (g_bakWaiting) setLine(row, r == 0 ? "\x1b[90m  %s" : "", T(S_B_LOADING));
+                else if (g_bakCount == 0) setLine(row, r == 0 ? "\x1b[33m  %s" : "", T(S_B_NONE));
+                else if (r < g_bakCount && r == g_bakCursor) setLine(row, "\x1b[47;30m> %-46.46s", g_bakLines[r]);
+                else if (r < g_bakCount) setLine(row, "  %-46.46s", g_bakLines[r]);
+                else setLine(row, "");
+            }
+            LightLock_Unlock(&g_lock);
+            setLine(25, "");
+            setLine(26, "\x1b[90m%s", T(S_B_HINT));
         }
         else if (g_menuOpen)
         {

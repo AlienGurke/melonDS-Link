@@ -111,6 +111,11 @@ public:
     // launchDone: answers a game picked on the 3DS (it started or failed)
     void SendSession(const std::string& running, bool launchDone = false);
 
+    // the same, asked for on the 3DS: send the list of a game's backups /
+    // load backup `index` of the list sent with `token` (both in the background)
+    void SendBackupList(const std::string& romPath);
+    void RestoreFrom3ds(const std::string& romPath, int index, uint32_t token);
+
     // tell the 3DS which games are on the PC (marked "PC" in its list);
     // done in the background
     void RequestOnPcSync() { syncRequested = true; upCv.notify_one(); }
@@ -126,6 +131,9 @@ private:
     static bool readRemote(const std::string& path, bool& exists, std::vector<uint8_t>& data);
     int askOn3ds(const std::string& text);   // 0 = A, 1 = B, -1 failed, -2 cancelled
     std::string lastSaveDir;
+    std::mutex bakMutex;
+    uint32_t bakToken = 0;
+    std::vector<std::string> bakPaths;   // the list last sent to the 3DS
     std::string sessionName;          // last sent (guarded by upMutex)
     bool sessionPending = false, sessionDone = false;
     void sendSessionNow();

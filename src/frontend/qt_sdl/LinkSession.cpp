@@ -498,6 +498,55 @@ std::vector<Session::Backup> Session::Backups(const std::string& game)
     return out;
 }
 
+void Session::SendBackupList(const std::string& romPath)
+{
+    std::thread([this, romPath]
+    {
+        auto list = Backups(stripExt(fileNameOf(romPath)));
+        uint32_t token;
+        {
+            std::lock_guard<std::mutex> lock(bakMutex);
+            token = ++bakToken;
+            bakPaths.clear();
+            for (const auto& b : list) bakPaths.push_back(b.path);
+        }
+        std::string text = romPath;
+        for (const auto& b : list) text += "\n" + b.when + "  (" + human(b.size) + ")";
+        std::vector<uint8_t> payload(4 + text.size());
+        memcpy(payload.data(), &token, 4);
+        memcpy(payload.data() + 4, text.data(), text.size());
+        uint16_t status = 0;
+        Link::Get().Request(LINK_CMD_BACKUPLIST, payload.data(), (uint32_t)payload.size(), status);
+    }).detach();
+}
+
+void Session::RestoreFrom3ds(const std::string& romPath, int index, uint32_t token)
+{
+    std::thread([this, romPath, index, token]
+    {
+        Client& c = Link::Get();
+        std::string path;
+        {
+            std::lock_guard<std::mutex> lock(bakMutex);
+            if (token == bakToken && index >= 0 && index < (int)bakPaths.size()) path = bakPaths[index];
+        }
+        std::string err;
+        if (path.empty()) err = TrS("bak.gone");
+        else
+        {
+            // the game may just have been ended for this: give it a moment
+            for (int i = 0; i < 50 && EmuActive && EmuActive(); i++)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            size_t slash = romPath.find_last_of('/');
+            std::string dir = slash == std::string::npos ? "" : romPath.substr(0, slash);
+            err = RestoreBackup(dir, fileNameOf(romPath), path);
+        }
+        if (err.empty()) c.SetStatusText(c.Tr3DS("bak.done3ds"));
+        else c.SetStatusText(c.Tr3DS("bak.failed3ds") + ": " + err);
+        c.PostMessage(err.empty() ? TrS("bak.done") : Tr("bak.failed").arg(q(err)).toStdString());
+    }).detach();
+}
+
 std::string Session::RestoreBackup(const std::string& romDir, const std::string& romName, const std::string& backupPath)
 {
     const std::string game = stripExt(romName);
@@ -508,6 +557,16 @@ std::string Session::RestoreBackup(const std::string& romDir, const std::string&
     }
     if (preparing) return TrS("bak.running");
     if (Link::Get().GetState() != State::Connected) return TrS("connect.first");
+    // a save still on its way (e.g. written when the game was ended) goes first,
+    // so it cannot land on top of the backup afterwards
+    for (int i = 0; i < 300; i++)
+    {
+        {
+            std::lock_guard<std::mutex> lock(upMutex);
+            if (!upPending && !uploading) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
 
     std::vector<uint8_t> data;
     if (!readWholeFile(q(backupPath), data) || data.empty()) return backupPath;

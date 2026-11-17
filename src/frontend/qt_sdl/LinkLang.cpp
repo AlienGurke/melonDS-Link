@@ -170,6 +170,9 @@ const Entry kTexts[] = {
     {"bak.running", "This game is running in melonDS right now - quit it first.", "Dieses Spiel läuft gerade in melonDS – bitte zuerst beenden."},
     {"bak.done", "The backup is now the save on the 3DS.", "Das Backup ist jetzt der Spielstand auf dem 3DS."},
     {"bak.failed", "That did not work: %1", "Das hat nicht geklappt: %1"},
+    {"bak.done3ds", "Backup loaded", "Backup geladen"},
+    {"bak.failed3ds", "Backup not loaded", "Backup nicht geladen"},
+    {"bak.gone", "the list has changed meanwhile - please open it again", "die Liste hat sich inzwischen geändert – bitte neu öffnen"},
     {"bak.working", "Writing to the 3DS...", "Schreibe auf den 3DS..."},
 
     // tests
