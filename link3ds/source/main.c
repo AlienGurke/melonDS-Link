@@ -716,10 +716,6 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         const uint8_t* data = payload + sizeof(req) + req.pathLen;
         size_t dataLen = h->len - sizeof(req) - req.pathLen;
 
-        /* SD card and WiFi are served on the same system core: while writing,
-           the video and input threads leave the socket service alone
-           (otherwise 512 KB took 10-18 s to write) */
-        g_bulkActive = true;
         u64 w0 = svcGetSystemTick();
         FILE* f = fopen(path, "r+b");
         if (!f && (req.flags & LINK_WRITE_CREATE))
@@ -727,7 +723,7 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             mkdirParents(path);
             f = fopen(path, "w+b");
         }
-        if (!f) { g_bulkActive = false; return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0); }
+        if (!f) return sendResponse(fd, h, LINK_ERR_NOTFOUND, NULL, 0);
         /* no stdio buffer: otherwise the data goes to the SD card in ~1 KB
            pieces, each committed on its own (512 KB took ~10 s) */
         setvbuf(f, NULL, _IONBF, 0);
@@ -736,7 +732,6 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         ok = (fflush(f) == 0) && ok;
         fclose(f);
         g_upSdTicks += svcGetSystemTick() - w0;
-        g_bulkActive = false;
         return sendResponse(fd, h, ok ? LINK_OK : LINK_ERR_IO, NULL, 0);
     }
 
@@ -988,7 +983,10 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
             if (hadOld) rename(bak, to);   /* put the old one back */
             return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
         }
-        if (hadOld) remove(bak);
+        /* the old file becomes the next `from`: it already has its space on
+           the SD card, so the next upload only overwrites (finding free space
+           for a new file is very slow on big, full SD cards: ~17 s for 512 KB) */
+        if (hadOld && rename(bak, from) != 0) remove(bak);
         return sendResponse(fd, h, LINK_OK, NULL, 0);
     }
 

@@ -514,13 +514,25 @@ bool Session::uploadNow(const std::string& remote, const std::vector<uint8_t>& d
     Client& c = Link::Get();
     if (c.GetState() != State::Connected) return false;
     std::string tmp = remote + ".tmp";
+    // the .tmp stays on the 3DS between uploads (it is the previous save after
+    // each replace) and is only overwritten - much faster on the SD card
     for (size_t off = 0; off < data.size(); )
     {
         uint32_t n = (uint32_t)std::min<size_t>(LINK_MAX_PAYLOAD - 1024, data.size() - off);
         if (!c.Write(tmp, off, data.data() + off, n, true)) return false;
         off += n;
     }
-    // a left-over .tmp might have been longer
+    {
+        // cut it to the exact size (it may have been longer)
+        std::vector<uint8_t> req(sizeof(LinkSetSizeReq) + tmp.size());
+        LinkSetSizeReq r = {};
+        r.size = data.size();
+        memcpy(req.data(), &r, sizeof(r));
+        memcpy(req.data() + sizeof(r), tmp.data(), tmp.size());
+        uint16_t status = 0;
+        if (!c.Request(LINK_CMD_SETSIZE, req.data(), (uint32_t)req.size(), status) || status != LINK_OK) return false;
+    }
+    // check what arrived
     uint64_t size = 0;
     bool isDir = false;
     if (!c.Stat(tmp, size, isDir) || size != data.size()) return false;
@@ -557,6 +569,11 @@ void Session::uploader()
         // the backup always works, even without a connection
         if (!announcedRetry) WriteBackup(game, data.data(), (uint32_t)data.size());
 
+        if (!announcedRetry)
+        {
+            Link::Get().PostMessage("3DS Link: Spielstand wird auf den 3DS geschrieben... (am PC ist er schon gesichert)");
+            Link::Get().SetStatusText("Spielstand wird geschrieben - 3DS nicht ausschalten");
+        }
         auto u0 = std::chrono::steady_clock::now();
         bool ok = uploadNow(remote, data);
         {
