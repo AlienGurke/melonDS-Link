@@ -757,7 +757,10 @@ void ComputeRenderer3D::RenderFrame()
 
                     for (u32 b = startaddr; b < endaddr; b++)
                     {
-                        int blk = captureinfo[b];
+                        // texture memory is 16 blocks of 32 KB and wraps around: a big texture
+                        // near the end would otherwise read past the array (garbage block
+                        // -> crash, seen when a game started)
+                        int blk = captureinfo[b & 15];
                         if (blk == -1) continue;
 
                         capblock = blk;
@@ -812,6 +815,14 @@ void ComputeRenderer3D::RenderFrame()
                     }
                 }
 
+                if (numVariants >= MaxVariants)
+                {
+                    // no room for another texture/sampler combination this frame (more
+                    // likely with the texture filter): better a wrong texture on a few
+                    // polygons than writing past the array
+                    prevVariant = 0;
+                    goto foundVariant;
+                }
                 prevVariant = numVariants;
                 variants[numVariants] = variant;
                 variants[numVariants].Width = TextureWidth(polygon->TexParam);

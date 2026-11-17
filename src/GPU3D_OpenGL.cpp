@@ -537,7 +537,7 @@ void GLRenderer3D::BuildPolygons(GLRenderer3D::RendererPolygon* polygons, int np
 
                     for (u32 b = startaddr; b < endaddr; b++)
                     {
-                        int blk = captureinfo[b];
+                        int blk = captureinfo[b & 15];   // wraps around, see GPU3D_Compute.cpp
                         if (blk == -1) continue;
 
                         capblock = blk;

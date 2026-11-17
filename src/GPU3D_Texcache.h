@@ -285,7 +285,10 @@ public:
             texArrays.resize(texArrays.size()+1);
             TexHandleT& array = texArrays[texArrays.size()-1];
 
-            u32 layers = std::max<u32>(1, std::min<u32>((8*1024*1024) / (storeW*storeH*4), 64));
+            // magnified textures get bigger arrays (fewer different arrays per frame;
+            // the compute renderer can only handle so many combinations)
+            u32 budget = scale > 1 ? 32*1024*1024 : 8*1024*1024;
+            u32 layers = std::max<u32>(1, std::min<u32>(budget / (storeW*storeH*4), 64));
 
             // allocate new array texture
             //printf("allocating new layer set for %d %d %d %d\n", width, height, texArrays.size()-1, array.ImageDescriptor);
