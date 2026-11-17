@@ -81,6 +81,9 @@
 #include "LinkSession.h"
 #include "LinkRomDialog.h"
 #include "LinkLang.h"
+#include <QVBoxLayout>
+#include <QDialogButtonBox>
+#include <QTextBrowser>
 #include "SaveManager.h"
 
 using namespace melonDS;
@@ -948,6 +951,42 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         QMessageBox::information(this, Link::Tr("test.sdtitle"), text + "\n\n" + Link::Tr("test.inlog"));
                     }, Qt::QueuedConnection);
                 }).detach();
+            });
+
+            QAction* actLinkHelp = menu->addAction("");
+            linkTexts.push_back({actLinkHelp, "menu.help"});
+            connect(actLinkHelp, &QAction::triggered, this, [this]
+            {
+                // "# " = heading, "- " = point; built into a small page
+                QString html;
+                bool inList = false;
+                for (const QString& line : Link::Tr("help.text").split('\n'))
+                {
+                    QString t = line.toHtmlEscaped();
+                    if (line.startsWith("# "))
+                    {
+                        if (inList) { html += "</ul>"; inList = false; }
+                        html += "<h3>" + t.mid(2) + "</h3>";
+                    }
+                    else if (line.startsWith("- "))
+                    {
+                        if (!inList) { html += "<ul>"; inList = true; }
+                        html += "<li>" + t.mid(2) + "</li>";
+                    }
+                    else if (!line.isEmpty()) html += "<p>" + t + "</p>";
+                }
+                if (inList) html += "</ul>";
+                QDialog dlg(this);
+                dlg.setWindowTitle(Link::Tr("help.title"));
+                dlg.resize(680, 620);
+                auto* lay = new QVBoxLayout(&dlg);
+                auto* view = new QTextBrowser(&dlg);
+                view->setHtml(html);
+                lay->addWidget(view);
+                auto* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+                connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+                lay->addWidget(bb);
+                dlg.exec();
             });
 
             QAction* actLinkDebugFolder = debugMenu->addAction("");
