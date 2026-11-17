@@ -68,6 +68,8 @@ enum LinkCommand
                                 fill blocks without reading it from the SD card.
                                 One spot check that is not padding switches back to
                                 full reading for the rest of the stream. */
+    LINK_CMD_SDTEST     = 19,/* in: folder (empty = the saves folder)  out: text with
+                                timings of different ways to write to the SD card */
 };
 
 /* send settings of the 3DS (0 = keep the current value) */

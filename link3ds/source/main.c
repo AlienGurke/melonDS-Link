@@ -957,6 +957,72 @@ static bool handleCommand(int fd, const LinkHeader* h, uint8_t* payload)
         return sendResponse(fd, h, LINK_OK, NULL, 0);
     }
 
+    case LINK_CMD_SDTEST:
+    {
+        /* write the same 128 KB in different ways and time each (diagnostics) */
+        char dir[LINK_MAX_PATH + 8];
+        if (h->len == 0 || !makeSdPath(dir, sizeof(dir), (const char*)payload, h->len))
+        {
+            LightLock_Lock(&g_lock);
+            snprintf(dir, sizeof(dir), "sdmc:%.100s/saves", g_romDir);
+            LightLock_Unlock(&g_lock);
+        }
+        char tpath[LINK_MAX_PATH + 40];
+        snprintf(tpath, sizeof(tpath), "%s/melonDS-Link-sdtest.bin", dir);
+        const u32 N = 128 * 1024;
+        u8* heap = (u8*)malloc(N);
+        if (!heap) return sendResponse(fd, h, LINK_ERR_IO, NULL, 0);
+        for (u32 k = 0; k < N; k++) heap[k] = (u8)(k * 7 + 3);
+        char txt[512];
+        int tl = snprintf(txt, sizeof(txt), "128 KB in %.60s:", dir);
+#define SDT(label, code) do { u64 t0_ = svcGetSystemTick(); code; \
+            tl += snprintf(txt + tl, sizeof(txt) - tl, " %s %lu ms,", label, \
+                (unsigned long)((svcGetSystemTick() - t0_) * 1000 / SYSCLOCK_ARM11)); } while (0)
+        FILE* f;
+        remove(tpath);
+        SDT("neue Datei", { f = fopen(tpath, "wb"); if (f) { fwrite(heap, 1, N, f); fclose(f); } });
+        SDT("ueberschreiben", { f = fopen(tpath, "r+b"); if (f) { setvbuf(f, NULL, _IONBF, 0); fwrite(heap, 1, N, f); fclose(f); } });
+        SDT("ueberschreiben 32K-Stuecke", { f = fopen(tpath, "r+b"); if (f) { setvbuf(f, NULL, _IONBF, 0);
+            for (u32 o = 0; o < N; o += 0x8000) fwrite(heap + o, 1, 0x8000, f); fclose(f); } });
+#ifdef __3DS__
+        {
+            static u16 w[LINK_MAX_PATH + 48];
+            memset(w, 0, sizeof(w));
+            ssize_t wl = utf8_to_utf16(w, (const uint8_t*)tpath + 5, LINK_MAX_PATH + 32);   /* without "sdmc:" */
+            if (wl > 0) w[wl] = 0;
+            FS_Archive ar;
+            Handle fh;
+            u32 wr;
+            bool arOk = R_SUCCEEDED(FSUSER_OpenArchive(&ar, ARCHIVE_SDMC, fsMakePath(PATH_EMPTY, "")));
+            if (arOk)
+            {
+                SDT("FS direkt", { if (R_SUCCEEDED(FSUSER_OpenFile(&fh, ar, fsMakePath(PATH_UTF16, w), FS_OPEN_WRITE, 0)))
+                    { FSFILE_Write(fh, &wr, 0, heap, N, 0); FSFILE_Close(fh); } });
+                u8* lin = (u8*)linearAlloc(N);
+                if (lin)
+                {
+                    memcpy(lin, heap, N);
+                    SDT("FS linear", { if (R_SUCCEEDED(FSUSER_OpenFile(&fh, ar, fsMakePath(PATH_UTF16, w), FS_OPEN_WRITE, 0)))
+                        { FSFILE_Write(fh, &wr, 0, lin, N, 0); FSFILE_Close(fh); } });
+                    linearFree(lin);
+                }
+                g_bulkActive = true;
+                svcSleepThread(50000000);   /* let the other threads notice */
+                SDT("FS ohne Netz", { if (R_SUCCEEDED(FSUSER_OpenFile(&fh, ar, fsMakePath(PATH_UTF16, w), FS_OPEN_WRITE, 0)))
+                    { FSFILE_Write(fh, &wr, 0, heap, N, 0); FSFILE_Close(fh); } });
+                g_bulkActive = false;
+                FSUSER_CloseArchive(ar);
+            }
+        }
+#endif
+        SDT("lesen", { f = fopen(tpath, "rb"); if (f) { setvbuf(f, NULL, _IONBF, 0); fread(heap, 1, N, f); fclose(f); } });
+#undef SDT
+        remove(tpath);
+        free(heap);
+        if (tl > 0 && txt[tl - 1] == ',') txt[--tl] = 0;
+        return sendResponse(fd, h, LINK_OK, txt, (uint32_t)strlen(txt));
+    }
+
     case LINK_CMD_REPLACE:
     {
         /* replace `to` with `from`, keeping the old file until the new one is in place */

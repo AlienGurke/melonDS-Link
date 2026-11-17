@@ -746,6 +746,33 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 }).detach();
             });
 
+            QAction* actLinkSd = menu->addAction("SD-Karte des 3DS testen...");
+            connect(actLinkSd, &QAction::triggered, this, [this]
+            {
+                if (Link::Get().GetState() != Link::State::Connected)
+                {
+                    QMessageBox::information(this, "melonDS Link", "Zuerst mit dem 3DS verbinden.");
+                    return;
+                }
+                emuInstance->osdAddMessage(0, "3DS Link: SD-Karten-Test laeuft (bis zu einer Minute)...");
+                std::thread([this]
+                {
+                    uint16_t status = 0;
+                    std::vector<uint8_t> out;
+                    bool ok = Link::Get().Request(LINK_CMD_SDTEST, nullptr, 0, status, &out) && status == LINK_OK;
+                    std::string res = ok ? std::string(out.begin(), out.end())
+                                         : std::string("Test fehlgeschlagen - ist die neueste 3DS-App drauf?");
+                    Link::Session::Log("SD-Test: " + res);
+                    QString text = QString::fromStdString(res);
+                    text.replace(": ", ":\n").replace(", ", "\n");
+                    QMetaObject::invokeMethod(this, [this, text]
+                    {
+                        QMessageBox::information(this, "melonDS Link - SD-Karte", text +
+                            "\n\n(steht auch in melonDS-Link\\link-log.txt)");
+                    }, Qt::QueuedConnection);
+                }).detach();
+            });
+
             menu->addSeparator();
             QAction* actLinkRoms = menu->addAction("ROMs vom 3DS (vorab kopieren)...");
             connect(actLinkRoms, &QAction::triggered, this, [this] { LinkRomDialog::openDlg(this); });
