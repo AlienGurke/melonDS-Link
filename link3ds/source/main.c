@@ -163,7 +163,16 @@ static const char* const g_strKeys[S_COUNT] = {
     "menu_shotmode", "shot_both", "shot_top", "shot_bottom", "shot_separate",
     "menu_statusbar", "battery", "wifi",
 };
-#define LANG_FILE_VERSION 2   /* files of an older version are written anew */
+/* the files carry a fingerprint of the built-in texts: when an app update
+   changes a text, they are written anew (so the change shows up) */
+static u32 langFileVersion(void)
+{
+    u32 h = 2166136261u;
+    for (int l = 0; l < LANG_COUNT; l++)
+        for (int i = 0; i < S_COUNT; i++)
+            for (const char* c = g_strs[l][i]; *c; c++) h = (h ^ (u8)*c) * 16777619u;
+    return h;
+}
 static char g_custom[LANG_COUNT][S_COUNT][80];   /* from the files ("" = built-in) */
 #define LANG_DIR "sdmc:/3ds/melonDS-Link/Language"
 
@@ -176,7 +185,8 @@ static void loadLanguageFiles(void)
     {
         char path[96];
         snprintf(path, sizeof(path), LANG_DIR "/%s.txt", g_langCodes[l]);
-        int found = 0, version = 0;
+        int found = 0;
+        u32 version = 0;
         FILE* f = fopen(path, "r");
         if (f)
         {
@@ -187,7 +197,7 @@ static void loadLanguageFiles(void)
                 char* eq = strchr(line, '=');
                 if (line[0] == '#' || !eq) continue;
                 *eq = 0;
-                if (strcmp(line, "version") == 0) { version = atoi(eq + 1); continue; }
+                if (strcmp(line, "version") == 0) { version = (u32)strtoul(eq + 1, NULL, 16); continue; }
                 for (int i = 0; i < S_COUNT; i++)
                     if (strcmp(line, g_strKeys[i]) == 0)
                     {
@@ -198,7 +208,7 @@ static void loadLanguageFiles(void)
             }
             fclose(f);
         }
-        if (version != LANG_FILE_VERSION)
+        if (version != langFileVersion())
         {
             /* texts of an older app version: start from the current ones */
             memset(g_custom[l], 0, sizeof(g_custom[l]));
@@ -209,7 +219,7 @@ static void loadLanguageFiles(void)
         f = fopen(path, "w");
         if (!f) continue;
         fprintf(f, "# melonDS Link (3DS) - key=text, UTF-8. Restart the app after editing.\n");
-        fprintf(f, "version=%d\n", LANG_FILE_VERSION);
+        fprintf(f, "version=%lx\n", (unsigned long)langFileVersion());
         for (int i = 0; i < S_COUNT; i++)
             fprintf(f, "%s=%s\n", g_strKeys[i], g_custom[l][i][0] ? g_custom[l][i] : g_strs[l][i]);
         fclose(f);

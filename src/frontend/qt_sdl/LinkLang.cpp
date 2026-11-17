@@ -231,9 +231,23 @@ const Entry kTexts[] = {
     {"test.inlog", "(also in melonDS-Link\\Debug\\link-log.txt)", "(steht auch in melonDS-Link\\Debug\\link-log.txt)"},
 };
 
-// files of another version are written anew from the built-in texts
-// (so changed texts in a new release reach the user)
-const char* const kFileVersion = "2";
+// The files carry a fingerprint of the built-in texts: when a new version of
+// melonDS changes a text, en.txt/de.txt are written anew, so the change shows
+// up (own edits there are lost then - own texts belong in a file with a new
+// name, e.g. de-mine.txt, which becomes a language of its own).
+QString fileVersion()
+{
+    static QString v;
+    if (v.isEmpty())
+    {
+        uint32_t h = 2166136261u;
+        for (const Entry& e : kTexts)
+            for (const char* t : {e.key, e.en, e.de})
+                for (const char* c = t; *c; c++) h = (h ^ (uint8_t)*c) * 16777619u;
+        v = QString::number(h, 16);
+    }
+    return v;
+}
 
 std::mutex g_mutex;
 std::string g_code = "en";
@@ -274,8 +288,9 @@ void writeFile(const QString& path, bool german)
     out.setEncoding(QStringConverter::Utf8);
     out << "# melonDS Link - " << (german ? "Deutsch" : "English") << "\n";
     out << "# key=text (UTF-8). %1, %2... are filled in. \\n = new line.\n";
-    out << "# Copy this file to add a language (e.g. fr.txt); missing keys fall back to English.\n";
-    out << "version=" << kFileVersion << "\n\n";
+    out << "# Written anew when melonDS changes its texts. For own texts copy it to a new name\n";
+    out << "# (e.g. fr.txt or de-mine.txt): that becomes a language of its own; missing keys fall back to English.\n";
+    out << "version=" << fileVersion() << "\n\n";
     for (const Entry& e : kTexts)
     {
         QString v = QString::fromUtf8(german ? e.de : e.en);
@@ -308,7 +323,7 @@ void InitLanguages(const std::string& code)
         QString path = langDir() + "/" + c + ".txt";
         auto existing = readFile(path);
         auto ver = existing.find("version");
-        if (ver == existing.end() || ver->second != kFileVersion) existing.clear();
+        if (ver == existing.end() || ver->second != fileVersion()) existing.clear();
         existing.erase("version");
         bool complete = !existing.empty();
         for (const Entry& e : kTexts) if (!existing.count(e.key)) { complete = false; break; }
@@ -328,7 +343,7 @@ void InitLanguages(const std::string& code)
                     out.setEncoding(QStringConverter::Utf8);
                     out << "# melonDS Link - " << target["language.name"] << "\n";
                     out << "# key=text (UTF-8). %1, %2... are filled in. \\n = new line.\n";
-                    out << "version=" << kFileVersion << "\n\n";
+                    out << "version=" << fileVersion() << "\n\n";
                     for (const Entry& e : kTexts)
                     {
                         QString v = target[e.key];
