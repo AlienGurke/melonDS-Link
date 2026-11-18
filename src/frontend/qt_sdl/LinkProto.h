@@ -98,7 +98,11 @@ enum LinkCommand
                                 folder, DENIED: the archive does not exist / no access) */
     LINK_CMD_ARCINFO    = 28,/* in: LinkArchiveReq (offset/length unused), no path
                                 out: LinkFormatInfo of the archive */
+    LINK_CMD_TITLES     = 29,/* in: -   out: u32 count + u64 title ids installed on the
+                                SD card, then u32 count + u64 ids of the game card */
 };
+/* LINK_CMD_ARC*: when the archive or path cannot be opened, the answer carries the
+   3DS result code (u32) as payload, to tell the user why */
 
 /* 3DS file system archives (FS_ArchiveID) and media types used with LINK_CMD_ARCREAD */
 #define LINK_ARCHIVE_USER_SAVEDATA  0x00000004u   /* a title's save: media, low id, high id */
