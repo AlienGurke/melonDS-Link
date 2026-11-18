@@ -108,6 +108,8 @@ enum LinkCommand
 #define LINK_ARCHIVE_USER_SAVEDATA  0x567890B2u   /* another title's save: media, low id, high id */
 #define LINK_ARCHIVE_EXTDATA        0x00000006u   /* a title's extdata: media SD, extdata id, 0 */
 #define LINK_ARCHIVE_SHARED_EXTDATA 0x00000007u
+#define LINK_ARCHIVE_NAND_CTR_FS    0x1234567Du   /* CTR-NAND (system titles); no archive path */
+#define LINK_MEDIA_NOPATH           0xFFFFFFFFu   /* mediaType: open the archive with an empty path */
 #define LINK_MEDIA_NAND             0u
 #define LINK_MEDIA_SD               1u
 #define LINK_MEDIA_GAMECARD         2u
