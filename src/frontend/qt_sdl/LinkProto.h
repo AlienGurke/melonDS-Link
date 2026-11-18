@@ -84,7 +84,18 @@ enum LinkCommand
                                 belongs to, then one line per save backup on the PC
                                 (newest first). Answer to LINK_EVENT_BACKUPS. */
     LINK_CMD_OPTIONS    = 23,/* in: u32 LINK_OPT_* (settings made in melonDS)  out: - */
+    LINK_CMD_ARCREAD    = 24,/* in: LinkArchiveReq + path inside the archive (ASCII)
+                                out: the whole file (at most LINK_MAX_PAYLOAD bytes).
+                                Reads from a 3DS file system archive (system data,
+                                extdata, saves), e.g. the Mii database. */
 };
+
+/* 3DS file system archives (FS_ArchiveID) and media types used with LINK_CMD_ARCREAD */
+#define LINK_ARCHIVE_SHARED_EXTDATA 0x00000007u
+#define LINK_MEDIA_NAND             0u
+/* the Mii database (Mii Maker): shared extdata F000000B, file /CFL_DB.dat */
+#define LINK_MII_EXTDATA_LOW        0xF000000Bu
+#define LINK_MII_EXTDATA_HIGH       0x00048000u
 
 /* which emulator is on the PC side (second u32 of LINK_CMD_HELLO, missing = melonDS).
    It decides the picture size and which menus the 3DS app offers. */
@@ -162,6 +173,15 @@ typedef struct LINK_PACKED LinkHelloResp
     char     lang[4];        /* language of the 3DS app ("en", "de") */
     uint32_t flags;          /* LINK_HELLO_* */
 } LinkHelloResp;
+
+typedef struct LINK_PACKED LinkArchiveReq
+{
+    uint32_t archive;      /* FS_ArchiveID */
+    uint32_t mediaType;    /* the archive's binary path: media type, low id, high id */
+    uint32_t lowId;
+    uint32_t highId;
+    /* followed by the path inside the archive */
+} LinkArchiveReq;
 
 typedef struct LINK_PACKED LinkStatResp
 {
@@ -347,6 +367,7 @@ static_assert(sizeof(LinkHeader) == 16, "LinkHeader size");
 static_assert(sizeof(LinkInputPacket) == 48, "LinkInputPacket size");
 static_assert(sizeof(LinkFramePacket) == 20, "LinkFramePacket size");
 static_assert(sizeof(LinkStreamBlock) == 12, "LinkStreamBlock size");
+static_assert(sizeof(LinkArchiveReq) == 16, "LinkArchiveReq size");
 #endif
 
 #endif
