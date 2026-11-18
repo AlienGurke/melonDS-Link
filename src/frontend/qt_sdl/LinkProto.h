@@ -86,18 +86,28 @@ enum LinkCommand
     LINK_CMD_OPTIONS    = 23,/* in: u32 LINK_OPT_* (settings made in melonDS)  out: - */
     /* 24 was a first version of LINK_CMD_ARCREAD without offsets (files over 256 KB
        failed, like the Mii database); it is no longer answered */
-    LINK_CMD_ARCREAD    = 25,/* in: LinkArchiveReq + path inside the archive (ASCII)
+    LINK_CMD_ARCREAD    = 25,/* in: LinkArchiveReq + path inside the archive
                                 out: u32 size of the whole file, then up to
                                 req.length bytes from req.offset.
                                 Reads from a 3DS file system archive (system data,
                                 extdata, saves), e.g. the Mii database. */
     LINK_CMD_GETTIME    = 26,/* in: -   out: u64 the 3DS clock as games see it
                                 (osGetTime: milliseconds since 1900-01-01) */
+    LINK_CMD_ARCLIST    = 27,/* in: LinkArchiveReq (offset/length unused) + folder inside
+                                the archive  out: LinkDirEntry list (NOTFOUND: no such
+                                folder, DENIED: the archive does not exist / no access) */
+    LINK_CMD_ARCINFO    = 28,/* in: LinkArchiveReq (offset/length unused), no path
+                                out: LinkFormatInfo of the archive */
 };
 
 /* 3DS file system archives (FS_ArchiveID) and media types used with LINK_CMD_ARCREAD */
+#define LINK_ARCHIVE_USER_SAVEDATA  0x00000004u   /* a title's save: media, low id, high id */
+#define LINK_ARCHIVE_EXTDATA        0x00000006u   /* a title's extdata: media SD, extdata id, 0 */
 #define LINK_ARCHIVE_SHARED_EXTDATA 0x00000007u
 #define LINK_MEDIA_NAND             0u
+#define LINK_MEDIA_SD               1u
+#define LINK_MEDIA_GAMECARD         2u
+/* Paths inside archives are UTF-8 here; the 3DS uses them as UTF-16. */
 /* the Mii database (Mii Maker): shared extdata F000000B, file /CFL_DB.dat */
 #define LINK_MII_EXTDATA_LOW        0xF000000Bu
 #define LINK_MII_EXTDATA_HIGH       0x00048000u
@@ -189,6 +199,16 @@ typedef struct LINK_PACKED LinkArchiveReq
     uint32_t length;       /* at most LINK_MAX_PAYLOAD - 4 */
     /* followed by the path inside the archive */
 } LinkArchiveReq;
+
+/* size and limits an archive was formatted with (same layout as the emulators keep it) */
+typedef struct LINK_PACKED LinkFormatInfo
+{
+    uint32_t totalSize;
+    uint32_t directories;
+    uint32_t files;
+    uint8_t  duplicateData;
+    uint8_t  reserved[3];
+} LinkFormatInfo;
 
 typedef struct LINK_PACKED LinkStatResp
 {
@@ -375,6 +395,7 @@ static_assert(sizeof(LinkInputPacket) == 48, "LinkInputPacket size");
 static_assert(sizeof(LinkFramePacket) == 20, "LinkFramePacket size");
 static_assert(sizeof(LinkStreamBlock) == 12, "LinkStreamBlock size");
 static_assert(sizeof(LinkArchiveReq) == 24, "LinkArchiveReq size");
+static_assert(sizeof(LinkFormatInfo) == 16, "LinkFormatInfo size");
 #endif
 
 #endif
