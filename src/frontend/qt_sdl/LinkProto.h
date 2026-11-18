@@ -105,7 +105,7 @@ enum LinkCommand
    3DS result code (u32) as payload, to tell the user why */
 
 /* 3DS file system archives (FS_ArchiveID) and media types used with LINK_CMD_ARCREAD */
-#define LINK_ARCHIVE_USER_SAVEDATA  0x00000004u   /* a title's save: media, low id, high id */
+#define LINK_ARCHIVE_USER_SAVEDATA  0x567890B2u   /* another title's save: media, low id, high id */
 #define LINK_ARCHIVE_EXTDATA        0x00000006u   /* a title's extdata: media SD, extdata id, 0 */
 #define LINK_ARCHIVE_SHARED_EXTDATA 0x00000007u
 #define LINK_MEDIA_NAND             0u
