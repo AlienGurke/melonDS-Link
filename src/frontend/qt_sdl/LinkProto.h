@@ -84,8 +84,11 @@ enum LinkCommand
                                 belongs to, then one line per save backup on the PC
                                 (newest first). Answer to LINK_EVENT_BACKUPS. */
     LINK_CMD_OPTIONS    = 23,/* in: u32 LINK_OPT_* (settings made in melonDS)  out: - */
-    LINK_CMD_ARCREAD    = 24,/* in: LinkArchiveReq + path inside the archive (ASCII)
-                                out: the whole file (at most LINK_MAX_PAYLOAD bytes).
+    /* 24 was a first version of LINK_CMD_ARCREAD without offsets (files over 256 KB
+       failed, like the Mii database); it is no longer answered */
+    LINK_CMD_ARCREAD    = 25,/* in: LinkArchiveReq + path inside the archive (ASCII)
+                                out: u32 size of the whole file, then up to
+                                req.length bytes from req.offset.
                                 Reads from a 3DS file system archive (system data,
                                 extdata, saves), e.g. the Mii database. */
 };
@@ -180,6 +183,8 @@ typedef struct LINK_PACKED LinkArchiveReq
     uint32_t mediaType;    /* the archive's binary path: media type, low id, high id */
     uint32_t lowId;
     uint32_t highId;
+    uint32_t offset;       /* part of the file to read */
+    uint32_t length;       /* at most LINK_MAX_PAYLOAD - 4 */
     /* followed by the path inside the archive */
 } LinkArchiveReq;
 
@@ -367,7 +372,7 @@ static_assert(sizeof(LinkHeader) == 16, "LinkHeader size");
 static_assert(sizeof(LinkInputPacket) == 48, "LinkInputPacket size");
 static_assert(sizeof(LinkFramePacket) == 20, "LinkFramePacket size");
 static_assert(sizeof(LinkStreamBlock) == 12, "LinkStreamBlock size");
-static_assert(sizeof(LinkArchiveReq) == 16, "LinkArchiveReq size");
+static_assert(sizeof(LinkArchiveReq) == 24, "LinkArchiveReq size");
 #endif
 
 #endif
