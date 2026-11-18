@@ -91,6 +91,8 @@ enum LinkCommand
                                 req.length bytes from req.offset.
                                 Reads from a 3DS file system archive (system data,
                                 extdata, saves), e.g. the Mii database. */
+    LINK_CMD_GETTIME    = 26,/* in: -   out: u64 the 3DS clock as games see it
+                                (osGetTime: milliseconds since 1900-01-01) */
 };
 
 /* 3DS file system archives (FS_ArchiveID) and media types used with LINK_CMD_ARCREAD */
