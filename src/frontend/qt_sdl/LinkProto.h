@@ -100,7 +100,16 @@ enum LinkCommand
                                 out: LinkFormatInfo of the archive */
     LINK_CMD_TITLES     = 29,/* in: -   out: u32 count + u64 title ids installed on the
                                 SD card, then u32 count + u64 ids of the game card */
+    LINK_CMD_ARCREADZ   = 30,/* like LINK_CMD_ARCREAD (req.length at most
+                                LINK_ARCZ_MAX_CHUNK), but out: LinkArcChunk + the data,
+                                LZ4-compressed when that is smaller */
+    LINK_CMD_ARCHASH    = 31,/* in: LinkArchiveReq + path  out: u64 size + u64 FNV-1a 64
+                                of the whole file (to skip files that did not change) */
 };
+
+#define LINK_ARCZ_MAX_CHUNK (192u * 1024u)
+#define LINK_FNV64_INIT     0xCBF29CE484222325ull
+#define LINK_FNV64_PRIME    0x00000100000001B3ull
 /* LINK_CMD_ARC*: when the archive or path cannot be opened, the answer carries the
    3DS result code (u32) as payload, to tell the user why */
 
@@ -215,6 +224,14 @@ typedef struct LINK_PACKED LinkFormatInfo
     uint8_t  duplicateData;
     uint8_t  reserved[3];
 } LinkFormatInfo;
+
+typedef struct LINK_PACKED LinkArcChunk
+{
+    uint32_t totalSize;    /* of the whole file */
+    uint32_t rawLen;       /* bytes of the file in this answer */
+    uint8_t  mode;         /* LINK_BLOCK_RAW or LINK_BLOCK_LZ4 */
+    uint8_t  reserved[3];
+} LinkArcChunk;
 
 typedef struct LINK_PACKED LinkStatResp
 {
@@ -402,6 +419,7 @@ static_assert(sizeof(LinkFramePacket) == 20, "LinkFramePacket size");
 static_assert(sizeof(LinkStreamBlock) == 12, "LinkStreamBlock size");
 static_assert(sizeof(LinkArchiveReq) == 24, "LinkArchiveReq size");
 static_assert(sizeof(LinkFormatInfo) == 16, "LinkFormatInfo size");
+static_assert(sizeof(LinkArcChunk) == 12, "LinkArcChunk size");
 #endif
 
 #endif
