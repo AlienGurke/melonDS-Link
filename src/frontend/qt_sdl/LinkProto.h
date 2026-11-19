@@ -94,7 +94,8 @@ enum LinkCommand
     LINK_CMD_GETTIME    = 26,/* in: -   out: u64 the 3DS clock as games see it
                                 (osGetTime: milliseconds since 1900-01-01), then
                                 (newer apps) u64 the user time offset, config block
-                                0x30001 (shown time minus the RTC) */
+                                0x30001 (shown time minus the RTC), then (if
+                                readable) u64 the raw RTC, milliseconds since 1900 */
     LINK_CMD_ARCLIST    = 27,/* in: LinkArchiveReq (offset/length unused) + folder inside
                                 the archive  out: LinkDirEntry list (NOTFOUND: no such
                                 folder, DENIED: the archive does not exist / no access) */
