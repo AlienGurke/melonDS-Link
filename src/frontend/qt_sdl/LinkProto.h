@@ -118,7 +118,11 @@ enum LinkCommand
                                 + path  out: - (NOTFOUND if it was not there) */
     LINK_CMD_ARCMKDIR   = 36,/* in: LinkArchiveReq + path  out: - (OK if it exists) */
     LINK_CMD_ARCCOMMIT  = 37,/* in: LinkArchiveReq: makes the savedata changes count and
-                                closes the archive; offset 1: throws them away instead */
+                                closes the archive; offset 1: throws them away instead.
+                                For saves on the SD card the game's secure value is deleted
+                                after the commit (else the game calls the save damaged) */
+    LINK_CMD_SECUREDEL  = 38,/* in: LinkArchiveReq of a save on the SD card: only deletes
+                                the game's secure value (repairs a save written before) */
     LINK_CMD_ARCLISTHASH= 32,/* like LINK_CMD_ARCLIST, but every entry is followed by a
                                 u64 FNV-1a 64 of the file (0 for folders), and the size
                                 is the file's own: one request per folder to see what
