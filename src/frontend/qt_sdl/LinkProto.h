@@ -107,7 +107,9 @@ enum LinkCommand
                                 of the whole file (to skip files that did not change) */
     LINK_CMD_SYSROMFS   = 33,/* in: LinkRomfsReq  out: LinkArcChunk + data: the RomFS of a
                                 system data archive (shared fonts, Mii graphics...) as
-                                the 3DS reads it (level 3, decrypted by the console) */
+                                the 3DS reads it (level 3, decrypted by the console).
+                                Only categories 0004009B and 000400DB (system data):
+                                anything else is DENIED */
     LINK_CMD_ARCLISTHASH= 32,/* like LINK_CMD_ARCLIST, but every entry is followed by a
                                 u64 FNV-1a 64 of the file (0 for folders), and the size
                                 is the file's own: one request per folder to see what
