@@ -92,10 +92,11 @@ enum LinkCommand
                                 Reads from a 3DS file system archive (system data,
                                 extdata, saves), e.g. the Mii database. */
     LINK_CMD_GETTIME    = 26,/* in: -   out: u64 the 3DS clock as games see it
-                                (osGetTime: milliseconds since 1900-01-01), then
-                                (newer apps) u64 the user time offset, config block
-                                0x30001 (shown time minus the RTC), then (if
-                                readable) u64 the raw RTC, milliseconds since 1900 */
+                                (osGetTime: milliseconds since 1900-01-01); newer apps
+                                add u64 user time offset (config block 0x30001), u64 the
+                                raw RTC (MCU registers, ms since 1900), u64 the RTC as
+                                PTM reads it (ms since 1900), u64 config block 0x30002;
+                                LINK_TIME_UNKNOWN where not readable */
     LINK_CMD_ARCLIST    = 27,/* in: LinkArchiveReq (offset/length unused) + folder inside
                                 the archive  out: LinkDirEntry list (NOTFOUND: no such
                                 folder, DENIED: the archive does not exist / no access) */
@@ -126,6 +127,10 @@ enum LinkCommand
                                 after the commit (else the game calls the save damaged) */
     LINK_CMD_SECUREDEL  = 38,/* in: LinkArchiveReq of a save on the SD card: only deletes
                                 the game's secure value (repairs a save written before) */
+    LINK_CMD_LIBRARY    = 39,/* in: UTF-8 text, one game per line: title id (hex) TAB path
+                                TAB name - the game list of Azahar for the 3DS tab.
+                                Picking one sends LINK_EVENT_LAUNCH with the path as ROM
+                                path and the title id as romSize.  out: - */
     LINK_CMD_ARCLISTHASH= 32,/* like LINK_CMD_ARCLIST, but every entry is followed by a
                                 u64 FNV-1a 64 of the file (0 for folders), and the size
                                 is the file's own: one request per folder to see what
@@ -177,6 +182,8 @@ typedef struct LinkTuning
 #define LINK_TUNE_SET       1u   /* `flags` is meant (so 0 can switch options off) */
 #define LINK_TUNE_BLOCKING  2u   /* blocking sends during big transfers (like ftpd) */
 
+#define LINK_TIME_UNKNOWN 0xFFFFFFFFFFFFFFFFull
+
 /* Events the 3DS has for melonDS (fetched with LINK_CMD_POLLEVENT) */
 enum LinkEventType
 {
@@ -190,6 +197,7 @@ enum LinkEventType
     LINK_EVENT_BACKUPS = 8,  /* list the save backups of a game: ROM path as the ROM path */
     LINK_EVENT_RESTORE = 9,  /* load a backup onto the 3DS: ROM path, reserved = index in
                                 the list, romSize = token of the list */
+    LINK_EVENT_LIBRARY = 10, /* Azahar: send the game list (LINK_CMD_LIBRARY) again */
 };
 
 enum LinkStatus
