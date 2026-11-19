@@ -105,6 +105,9 @@ enum LinkCommand
                                 LZ4-compressed when that is smaller */
     LINK_CMD_ARCHASH    = 31,/* in: LinkArchiveReq + path  out: u64 size + u64 FNV-1a 64
                                 of the whole file (to skip files that did not change) */
+    LINK_CMD_SYSROMFS   = 33,/* in: LinkRomfsReq  out: LinkArcChunk + data: the RomFS of a
+                                system data archive (shared fonts, Mii graphics...) as
+                                the 3DS reads it (level 3, decrypted by the console) */
     LINK_CMD_ARCLISTHASH= 32,/* like LINK_CMD_ARCLIST, but every entry is followed by a
                                 u64 FNV-1a 64 of the file (0 for folders), and the size
                                 is the file's own: one request per folder to see what
@@ -228,6 +231,14 @@ typedef struct LINK_PACKED LinkFormatInfo
     uint8_t  duplicateData;
     uint8_t  reserved[3];
 } LinkFormatInfo;
+
+typedef struct LINK_PACKED LinkRomfsReq
+{
+    uint64_t titleId;
+    uint32_t mediaType;    /* LINK_MEDIA_NAND for system data */
+    uint32_t offset;       /* part of the RomFS to read */
+    uint32_t length;       /* at most LINK_ARCZ_MAX_CHUNK */
+} LinkRomfsReq;
 
 typedef struct LINK_PACKED LinkArcChunk
 {
@@ -424,6 +435,7 @@ static_assert(sizeof(LinkStreamBlock) == 12, "LinkStreamBlock size");
 static_assert(sizeof(LinkArchiveReq) == 24, "LinkArchiveReq size");
 static_assert(sizeof(LinkFormatInfo) == 16, "LinkFormatInfo size");
 static_assert(sizeof(LinkArcChunk) == 12, "LinkArcChunk size");
+static_assert(sizeof(LinkRomfsReq) == 20, "LinkRomfsReq size");
 #endif
 
 #endif
