@@ -110,6 +110,15 @@ enum LinkCommand
                                 the 3DS reads it (level 3, decrypted by the console).
                                 Only categories 0004009B and 000400DB (system data):
                                 anything else is DENIED */
+    /* writing a save back (only the emulator's save sync uses these). Savedata changes
+       only count after LINK_CMD_ARCCOMMIT; until then closing the archive (another
+       archive asked for, the connection gone) throws them away. Extdata has no commit. */
+    LINK_CMD_ARCWRITE   = 34,/* in: LinkArcWriteReq + path + data  out: - */
+    LINK_CMD_ARCDELETE  = 35,/* in: LinkArchiveReq (offset: 0 file, 1 folder with all in it)
+                                + path  out: - (NOTFOUND if it was not there) */
+    LINK_CMD_ARCMKDIR   = 36,/* in: LinkArchiveReq + path  out: - (OK if it exists) */
+    LINK_CMD_ARCCOMMIT  = 37,/* in: LinkArchiveReq: makes the savedata changes count and
+                                closes the archive; offset 1: throws them away instead */
     LINK_CMD_ARCLISTHASH= 32,/* like LINK_CMD_ARCLIST, but every entry is followed by a
                                 u64 FNV-1a 64 of the file (0 for folders), and the size
                                 is the file's own: one request per folder to see what
@@ -241,6 +250,16 @@ typedef struct LINK_PACKED LinkRomfsReq
     uint32_t offset;       /* part of the RomFS to read */
     uint32_t length;       /* at most LINK_ARCZ_MAX_CHUNK */
 } LinkRomfsReq;
+
+typedef struct LINK_PACKED LinkArcWriteReq
+{
+    LinkArchiveReq archive;   /* offset: where in the file, length: bytes of data */
+    uint32_t fileSize;        /* the size the whole file must have */
+    uint16_t pathLen;         /* path follows, then `length` bytes of data */
+    uint16_t flags;           /* LINK_AW_* */
+} LinkArcWriteReq;
+
+#define LINK_AW_CREATE 1u     /* make the file anew with fileSize (deleted first if there) */
 
 typedef struct LINK_PACKED LinkArcChunk
 {
@@ -438,6 +457,7 @@ static_assert(sizeof(LinkArchiveReq) == 24, "LinkArchiveReq size");
 static_assert(sizeof(LinkFormatInfo) == 16, "LinkFormatInfo size");
 static_assert(sizeof(LinkArcChunk) == 12, "LinkArcChunk size");
 static_assert(sizeof(LinkRomfsReq) == 20, "LinkRomfsReq size");
+static_assert(sizeof(LinkArcWriteReq) == 32, "LinkArcWriteReq size");
 #endif
 
 #endif
