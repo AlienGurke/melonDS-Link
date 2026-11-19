@@ -105,6 +105,10 @@ enum LinkCommand
                                 LZ4-compressed when that is smaller */
     LINK_CMD_ARCHASH    = 31,/* in: LinkArchiveReq + path  out: u64 size + u64 FNV-1a 64
                                 of the whole file (to skip files that did not change) */
+    LINK_CMD_ARCLISTHASH= 32,/* like LINK_CMD_ARCLIST, but every entry is followed by a
+                                u64 FNV-1a 64 of the file (0 for folders), and the size
+                                is the file's own: one request per folder to see what
+                                changed */
 };
 
 #define LINK_ARCZ_MAX_CHUNK (192u * 1024u)
