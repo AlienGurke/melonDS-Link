@@ -127,6 +127,7 @@ enum LinkCommand
                                 after the commit (else the game calls the save damaged) */
     LINK_CMD_SECUREDEL  = 38,/* in: LinkArchiveReq of a save on the SD card: only deletes
                                 the game's secure value (repairs a save written before) */
+    LINK_CMD_VIDEOCAPS  = 40,/* in: -   out: u32 LINK_VIDCAP_*: what the 3DS can show */
     LINK_CMD_LIBRARY    = 39,/* in: UTF-8 text, one game per line: title id (hex) TAB path
                                 TAB name - the game list of Azahar for the 3DS tab.
                                 Picking one sends LINK_EVENT_LAUNCH with the path as ROM
@@ -446,6 +447,22 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_3DS_TILES_Y    30
 #define LINK_MAX_TILES      (LINK_3DS_TILES_X * LINK_3DS_TILES_Y)
 #define LINK_FRAME_MAX_BYTES 1400
+
+/* H.264 bottom screen (New 3DS: hardware decoder). The picture is coded turned by 90
+   degrees, 240 wide and 320 high, so that it is laid out like the bottom framebuffer:
+   coded pixel (column c, row r) = screen pixel (x = r, y = 239 - c). Baseline profile,
+   no B-frames, one slice per frame. Each frame (Annex-B NAL units with start codes) goes
+   in packets with a LinkFramePacket header: magic LINK_H264_MAGIC, frameId, seq (for
+   receipts, like the tiles), baseSeq unused, entryCount = bytes of data that follow,
+   flags = index << LINK_FRAME_INDEX_SHIFT | LINK_FRAME_LAST on the last packet |
+   LINK_FRAME_KEY on every packet of a frame that starts with SPS/PPS + IDR. A lost
+   packet: the 3DS waits for the next key frame; the PC sends one when it notices. */
+#define LINK_VIDCAP_H264    1u
+#define LINK_H264_MAGIC     0x3448444Du /* "MDH4" */
+#define LINK_FRAME_KEY      0x8000u
+#define LINK_H264_WIDTH     240
+#define LINK_H264_HEIGHT    320
+#define LINK_H264_PART      (LINK_FRAME_MAX_BYTES - 20) /* data bytes in every packet but the last */
 
 typedef struct LINK_PACKED LinkFramePacket
 {
