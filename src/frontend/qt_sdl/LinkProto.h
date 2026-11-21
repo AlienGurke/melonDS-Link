@@ -506,6 +506,12 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
    packet's id} to the 3DS's video port at once; the 3DS measures the time since it sent
    that packet (reported by LINK_CMD_VIDEOSTATS). Only if the 3DS reports LINK_VIDCAP_ECHO. */
 #define LINK_ECHO_MAGIC     0x4F484345u /* "ECHO" */
+#define LINK_VIDCAP_TILE_LZ4 32u     /* tiles: understands LINK_FRAMEZ_MAGIC packets */
+/* Packed tiles (only if the 3DS reports LINK_VIDCAP_TILE_LZ4): like a LINK_FRAME_MAGIC
+   packet, but after the header come a u16 (the entries' size unpacked) and the entries
+   packed as one LZ4 block. Lossless; at most LINK_FRAME_MAX_BYTES in all. The parity
+   (LINK_TILEPAR_MAGIC) covers the packets as sent, packed. */
+#define LINK_FRAMEZ_MAGIC   0x5A46444Du /* "MDFZ" */
 #define LINK_H264_MAX_PARITY 15
 #define LINK_H264_MAGIC     0x3448444Du /* "MDH4" */
 #define LINK_FRAME_KEY      0x8000u
