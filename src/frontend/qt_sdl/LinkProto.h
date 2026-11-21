@@ -135,6 +135,12 @@ enum LinkCommand
                                 the video socket's receive buffer in bytes, u32 freezes
                                 (lost frame until the next key frame), u32 their total ms,
                                 u32 the longest in ms - again since the last time */
+    LINK_CMD_VIDEOPROBE = 42,/* in: -   out: u32 the PC's time of the H.264 picture on the
+                                screen (as in its packets), then that picture as the decoder
+                                made it: LINK_H264_WIDTH x LINK_H264_HEIGHT u16 RGB565, rows
+                                of the coded picture. The PC compares it with what it sent
+                                and corrects its colour conversion (LINK_ERR_BADCMD from older
+                                apps; LINK_ERR_NOTFOUND if no H.264 picture is shown) */
     LINK_CMD_LIBRARY    = 39,/* in: UTF-8 text, one game per line: title id (hex) TAB path
                                 TAB name - the game list of Azahar for the 3DS tab.
                                 Picking one sends LINK_EVENT_LAUNCH with the path as ROM
