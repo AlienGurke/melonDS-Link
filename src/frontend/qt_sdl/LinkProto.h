@@ -129,8 +129,10 @@ enum LinkCommand
                                 the game's secure value (repairs a save written before) */
     LINK_CMD_VIDEOCAPS  = 40,/* in: -   out: u32 LINK_VIDCAP_*: what the 3DS can show */
     LINK_CMD_VIDEOSTATS = 41,/* in: -   out: u32 H.264 frames shown, dropped (waiting for a
-                                key frame), packets rebuilt from parity, decoder errors -
-                                each since the last LINK_CMD_VIDEOSTATS */
+                                key frame), packets rebuilt from parity, decoder errors,
+                                packets dropped because the decoder was behind - each
+                                since the last LINK_CMD_VIDEOSTATS -, then (newer apps) u32
+                                the video socket's receive buffer in bytes */
     LINK_CMD_LIBRARY    = 39,/* in: UTF-8 text, one game per line: title id (hex) TAB path
                                 TAB name - the game list of Azahar for the 3DS tab.
                                 Picking one sends LINK_EVENT_LAUNCH with the path as ROM
