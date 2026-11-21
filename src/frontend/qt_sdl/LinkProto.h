@@ -501,6 +501,11 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_VIDCAP_H264_RS 2u      /* understands the Reed-Solomon parity packets */
 #define LINK_VIDCAP_TILE_RS 4u      /* tiles: understands LINK_TILEPAR_MAGIC packets */
 #define LINK_VIDCAP_TILE_TS 8u      /* tiles: understands LINK_TILE_META time stamps */
+#define LINK_VIDCAP_ECHO    16u     /* measures the input round trip (LINK_ECHO_MAGIC) */
+/* Input round trip: for some input packets the PC sends {u32 LINK_ECHO_MAGIC, u32 the
+   packet's id} to the 3DS's video port at once; the 3DS measures the time since it sent
+   that packet (reported by LINK_CMD_VIDEOSTATS). Only if the 3DS reports LINK_VIDCAP_ECHO. */
+#define LINK_ECHO_MAGIC     0x4F484345u /* "ECHO" */
 #define LINK_H264_MAX_PARITY 15
 #define LINK_H264_MAGIC     0x3448444Du /* "MDH4" */
 #define LINK_FRAME_KEY      0x8000u
