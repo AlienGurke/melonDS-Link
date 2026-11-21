@@ -504,7 +504,10 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_VIDCAP_ECHO    16u     /* measures the input round trip (LINK_ECHO_MAGIC) */
 /* Input round trip: for some input packets the PC sends {u32 LINK_ECHO_MAGIC, u32 the
    packet's id} to the 3DS's video port at once; the 3DS measures the time since it sent
-   that packet (reported by LINK_CMD_VIDEOSTATS). Only if the 3DS reports LINK_VIDCAP_ECHO. */
+   that packet (reported by LINK_CMD_VIDEOSTATS). Only if the 3DS reports LINK_VIDCAP_ECHO.
+   Newer PCs add u32 their clock (ms) and u32 (their clock - the time stamp of the newest
+   picture, ms): with those the 3DS works out how long after the PC had a picture it shows
+   it (round trip / 2 gives the clocks' offset). */
 #define LINK_ECHO_MAGIC     0x4F484345u /* "ECHO" */
 #define LINK_VIDCAP_TILE_LZ4 32u     /* tiles: understands LINK_FRAMEZ_MAGIC packets */
 /* Packed tiles (only if the 3DS reports LINK_VIDCAP_TILE_LZ4): like a LINK_FRAME_MAGIC
