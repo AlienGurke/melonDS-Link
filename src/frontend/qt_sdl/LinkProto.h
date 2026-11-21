@@ -132,7 +132,9 @@ enum LinkCommand
                                 key frame), packets rebuilt from parity, decoder errors,
                                 packets dropped because the decoder was behind - each
                                 since the last LINK_CMD_VIDEOSTATS -, then (newer apps) u32
-                                the video socket's receive buffer in bytes */
+                                the video socket's receive buffer in bytes, u32 freezes
+                                (lost frame until the next key frame), u32 their total ms,
+                                u32 the longest in ms - again since the last time */
     LINK_CMD_LIBRARY    = 39,/* in: UTF-8 text, one game per line: title id (hex) TAB path
                                 TAB name - the game list of Azahar for the 3DS tab.
                                 Picking one sends LINK_EVENT_LAUNCH with the path as ROM
