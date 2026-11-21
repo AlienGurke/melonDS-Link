@@ -460,15 +460,18 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
    flags = index << LINK_FRAME_INDEX_SHIFT | LINK_FRAME_LAST on the last packet |
    LINK_FRAME_KEY on every packet of a frame that starts with SPS/PPS + IDR. A lost
    packet: the 3DS waits for the next key frame; the PC sends one when it notices.
-   Repair without a round trip: after the data packets come up to 4 parity packets
-   (groups = min(4, data packets)). Parity g is the XOR of the data packets i with
-   i % groups == g, each zero-padded to LINK_H264_PART bytes. A parity packet has
-   baseSeq = LINK_H264_PARITY | parts << 8 | groups << 4 | g, entryCount = the length
-   of the last data packet, flags = (parts + g) << LINK_FRAME_INDEX_SHIFT (+ KEY), and
-   the seq right after the frame's data packets (+ g). With one packet missing in a
-   group, the 3DS rebuilds it and confirms its seq as if it had arrived. */
+   Repair without a round trip (only if the 3DS reports LINK_VIDCAP_H264_RS): after
+   the k data packets come m parity packets (Reed-Solomon, Cauchy matrix over
+   GF(256)): parity j = sum over i of linkCauchy(j, i, m) * data i, each data packet
+   zero-padded to LINK_H264_PART bytes. Any m lost packets of a frame can be rebuilt.
+   A parity packet has baseSeq = LINK_H264_PARITY | k << 8 | m << 4 | j, entryCount =
+   the length of the last data packet, flags = (k + j) << LINK_FRAME_INDEX_SHIFT
+   (+ KEY), and the seq right after the frame's data packets (+ j). The 3DS confirms
+   the seq of a rebuilt packet as if it had arrived. */
 #define LINK_H264_PARITY    0x80000000u
 #define LINK_VIDCAP_H264    1u
+#define LINK_VIDCAP_H264_RS 2u      /* understands the Reed-Solomon parity packets */
+#define LINK_H264_MAX_PARITY 15
 #define LINK_H264_MAGIC     0x3448444Du /* "MDH4" */
 #define LINK_FRAME_KEY      0x8000u
 #define LINK_H264_WIDTH     240
@@ -490,6 +493,36 @@ typedef struct LINK_PACKED LinkFramePacket
 #if defined(_MSC_VER)
 #pragma pack(pop)
 #endif
+
+/* GF(256) (polynomial 0x11D) for the H.264 parity packets, the same on both sides */
+static uint8_t link_gf_exp[512], link_gf_log[256];
+static inline void linkGfInit(void)
+{
+    if (link_gf_exp[0]) return;
+    unsigned x = 1;
+    for (int i = 0; i < 255; i++)
+    {
+        link_gf_exp[i] = (uint8_t)x;
+        link_gf_log[x] = (uint8_t)i;
+        x <<= 1;
+        if (x & 0x100) x ^= 0x11D;
+    }
+    for (int i = 255; i < 512; i++) link_gf_exp[i] = link_gf_exp[i - 255];
+}
+static inline uint8_t linkGfMul(uint8_t a, uint8_t b)
+{
+    return (a && b) ? link_gf_exp[link_gf_log[a] + link_gf_log[b]] : 0;
+}
+static inline uint8_t linkGfInv(uint8_t a)
+{
+    return link_gf_exp[255 - link_gf_log[a]];   /* a != 0 */
+}
+/* the coefficient of data packet i in parity packet j (m parity packets): Cauchy
+   1 / (x_j + y_i) with x_j = j and y_i = m + i, so every square part is invertible */
+static inline uint8_t linkCauchy(int j, int i, int m)
+{
+    return linkGfInv((uint8_t)(j ^ (m + i)));
+}
 
 #ifdef __cplusplus
 static_assert(sizeof(LinkHeader) == 16, "LinkHeader size");
