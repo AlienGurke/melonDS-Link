@@ -411,6 +411,8 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_INPUT_DSTOUCH  1u     /* dsTouchX/Y valid: the DS screen is being touched */
 #define LINK_INPUT_ZOOM     2u     /* 3DS shows the DS screen enlarged */
 #define LINK_INPUT_VIDEOACK 4u     /* videoAckSeq/Mask valid */
+#define LINK_INPUT_NEEDKEY  8u     /* H.264: the 3DS lost a frame it could not rebuild and
+                                      waits for a key frame (set until one is decoded) */
 
 /* Video: the bottom screen is split into tiles of 8x8 RGB565 pixels:
    melonDS sends the DS screen (256x192 = 32x24 tiles), Azahar the 3DS bottom
