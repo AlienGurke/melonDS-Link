@@ -436,6 +436,17 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
               Lossy quick preview; the exact tile follows later (32 bytes)
      QUARTER: 4 u16 pixels (2x2, row-major), each covering 4x4 pixels.
               Coarsest preview, used only when even HALF does not fit (8 bytes)
+     META   : not a tile. Index 0: u32 the PC's time of the picture in ms, as for
+              H.264 (the 3DS shows the pictures as evenly paced as they were made).
+              Only sent if the 3DS reports LINK_VIDCAP_TILE_TS     (4 bytes)
+
+   Repair without a round trip (only if the 3DS reports LINK_VIDCAP_TILE_RS): after a
+   frame's k packets come m packets with magic LINK_TILEPAR_MAGIC: frameId as the frame,
+   seq = the seq of the frame's first packet (they have no seq of their own and are not
+   confirmed), baseSeq = k << 8 | m << 4 | j, then LINK_FRAME_MAX_BYTES bytes of parity
+   row j: Reed-Solomon as for H.264 (linkCauchy(j, i, m)) over the whole packets, header
+   included, each zero-padded to LINK_FRAME_MAX_BYTES. A rebuilt packet is used and
+   confirmed as if it had arrived.
 
    Frames: all packets of one update share frameId. `flags` holds the packet
    index within the frame (bits 1-15) and LINK_FRAME_LAST on the final packet.
@@ -451,6 +462,10 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_TILE_PAL16     4u
 #define LINK_TILE_HALF      5u
 #define LINK_TILE_QUARTER   6u
+#define LINK_TILE_META      7u
+#define LINK_TILEPAR_MAGIC  0x5054444Du /* "MDTP" */
+#define LINK_TILE_MAX_PARITY 15
+#define LINK_TILE_MAX_PACKETS 128   /* more packets in a frame: no parity for it */
 
 #define LINK_FRAME_LAST     1u
 #define LINK_FRAME_INDEX_SHIFT 1
@@ -484,6 +499,8 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_H264_PARITY    0x80000000u
 #define LINK_VIDCAP_H264    1u
 #define LINK_VIDCAP_H264_RS 2u      /* understands the Reed-Solomon parity packets */
+#define LINK_VIDCAP_TILE_RS 4u      /* tiles: understands LINK_TILEPAR_MAGIC packets */
+#define LINK_VIDCAP_TILE_TS 8u      /* tiles: understands LINK_TILE_META time stamps */
 #define LINK_H264_MAX_PARITY 15
 #define LINK_H264_MAGIC     0x3448444Du /* "MDH4" */
 #define LINK_FRAME_KEY      0x8000u
