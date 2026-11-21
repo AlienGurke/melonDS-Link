@@ -462,7 +462,8 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
    coded pixel (column c, row r) = screen pixel (x = r, y = 239 - c). Baseline profile,
    no B-frames, one slice per frame. Each frame (Annex-B NAL units with start codes) goes
    in packets with a LinkFramePacket header: magic LINK_H264_MAGIC, frameId, seq (for
-   receipts, like the tiles), baseSeq unused, entryCount = bytes of data that follow,
+   receipts, like the tiles), baseSeq = the PC's time of the
+   frame in ms (bit 31 clear; 0 = unknown: the 3DS shows it at once instead of evenly paced), entryCount = bytes of data that follow,
    flags = index << LINK_FRAME_INDEX_SHIFT | LINK_FRAME_LAST on the last packet |
    LINK_FRAME_KEY on every packet of a frame that starts with SPS/PPS + IDR. A lost
    packet: the 3DS waits for the next key frame; the PC sends one when it notices.
