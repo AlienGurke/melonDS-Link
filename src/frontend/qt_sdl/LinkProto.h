@@ -515,6 +515,11 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
    packed as one LZ4 block. Lossless; at most LINK_FRAME_MAX_BYTES in all. The parity
    (LINK_TILEPAR_MAGIC) covers the packets as sent, packed. */
 #define LINK_FRAMEZ_MAGIC   0x5A46444Du /* "MDFZ" */
+/* The same with the packed size too (u16 unpacked size, u16 packed size, then the block):
+   a packet rebuilt from parity comes zero-padded to LINK_FRAME_MAX_BYTES, and LZ4 needs
+   the exact packed size. Only if the 3DS reports LINK_VIDCAP_TILE_LZ4X. */
+#define LINK_VIDCAP_TILE_LZ4X 64u
+#define LINK_FRAMEZX_MAGIC  0x5846444Du /* "MDFX" */
 #define LINK_H264_MAX_PARITY 15
 #define LINK_H264_MAGIC     0x3448444Du /* "MDH4" */
 #define LINK_FRAME_KEY      0x8000u
