@@ -730,6 +730,45 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 globalCfg.SetBool("Link.AutoConnect", on);
                 Config::Save();
             });
+            // save backups: how many of the newest, and for how many days played the first one
+            // (settings stored +1, so 0 = never set = the default)
+            {
+                int keep = globalCfg.GetInt("Link.BackupKeepPlus1");
+                int days = globalCfg.GetInt("Link.BackupDaysPlus1");
+                Link::Session::backupKeep = keep > 0 ? keep - 1 : 3;
+                Link::Session::backupDays = days > 0 ? days - 1 : 7;
+                QAction* actKeep = menu->addAction("");
+                QAction* actDays = menu->addAction("");
+                auto label = [actKeep, actDays]
+                {
+                    actKeep->setText(Link::Tr("menu.backupkeep").arg(Link::Session::backupKeep.load()));
+                    actDays->setText(Link::Tr("menu.backupdays").arg(Link::Session::backupDays.load()));
+                };
+                label();
+                linkRelabel.push_back(label);
+                connect(actKeep, &QAction::triggered, this, [this, label]
+                {
+                    bool ok = false;
+                    int n = QInputDialog::getInt(this, Link::Tr("menu.backups.title"), Link::Tr("menu.backupkeep.ask"),
+                                                 Link::Session::backupKeep.load(), 1, 1000, 1, &ok);
+                    if (!ok) return;
+                    Link::Session::backupKeep = n;
+                    globalCfg.SetInt("Link.BackupKeepPlus1", n + 1);
+                    Config::Save();
+                    label();
+                });
+                connect(actDays, &QAction::triggered, this, [this, label]
+                {
+                    bool ok = false;
+                    int n = QInputDialog::getInt(this, Link::Tr("menu.backups.title"), Link::Tr("menu.backupdays.ask"),
+                                                 Link::Session::backupDays.load(), 0, 3650, 1, &ok);
+                    if (!ok) return;
+                    Link::Session::backupDays = n;
+                    globalCfg.SetInt("Link.BackupDaysPlus1", n + 1);
+                    Config::Save();
+                    label();
+                });
+            }
             // 3DS battery and WiFi on the PC screen
             linkStatusMode = std::clamp(globalCfg.GetInt("Link.StatusMode"), 0, 8);
             linkStatusMenu = menu->addMenu("");
@@ -2207,6 +2246,7 @@ std::string MainWindow::linkStatusLines()
 void MainWindow::retranslateLink()
 {
     for (auto& [a, key] : linkTexts) a->setText(Link::Tr(key));
+    for (auto& relabel : linkRelabel) relabel();
     for (auto& [m, key] : linkMenus) m->setTitle(Link::Tr(key));
     auto st = Link::Get().GetState();
     actLinkDisconnect->setEnabled(st != Link::State::Disconnected);

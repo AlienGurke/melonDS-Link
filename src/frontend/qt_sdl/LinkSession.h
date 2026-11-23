@@ -60,7 +60,11 @@ public:
     static void Log(const std::string& line);
 
     // keep the newest `keep` backups of a game (also used by tests)
-    static void WriteBackup(const std::string& gameName, const uint8_t* data, uint32_t len, int keep = 5);
+    static void WriteBackup(const std::string& gameName, const uint8_t* data, uint32_t len, int extra = 0);
+    // kept: the newest `backupKeep` backups of a game, and the first backup of each of the
+    // last `backupDays` days with backups (settings, like in Azahar-Link)
+    static std::atomic<int> backupKeep;
+    static std::atomic<int> backupDays;
 
     // --- ROMs on the 3DS / copied to the PC ---
     struct RemoteRom { std::string name; uint64_t size = 0; };

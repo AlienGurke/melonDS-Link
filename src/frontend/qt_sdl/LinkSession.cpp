@@ -2,6 +2,9 @@
     melonDS Link - games started from the 3DS, see LinkSession.h
 */
 
+#include <condition_variable>
+#include <deque>
+#include <thread>
 #include "LinkSession.h"
 #include "LinkLang.h"
 
@@ -160,27 +163,62 @@ std::string Session::BackupDir(const std::string& gameName)
     return BaseDir() + "/Backups/" + gameName;
 }
 
+// Log lines go to a writer thread: writing a file in the picture's or the emulation's thread
+// can hold them up (in Azahar-Link that was a hitch every 10 s).
 void Session::Log(const std::string& line)
 {
-    static std::mutex m;
-    std::lock_guard<std::mutex> lock(m);
-    QDir().mkpath(q(DebugDir()));
-    // the log used to be directly in melonDS-Link: move it along once
-    static bool moved = false;
-    if (!moved)
+    struct Writer
     {
-        moved = true;
-        QString old = q(BaseDir() + "/link-log.txt");
-        if (QFile::exists(old) && !QFile::exists(q(DebugDir() + "/link-log.txt")))
-            QFile::rename(old, q(DebugDir() + "/link-log.txt"));
+        std::mutex m;
+        std::condition_variable cv;
+        std::deque<std::string> queue;
+        std::thread thread;
+        Writer()
+        {
+            thread = std::thread([this]
+            {
+                QDir().mkpath(q(DebugDir()));
+                // the log used to be directly in melonDS-Link: move it along once
+                QString old = q(BaseDir() + "/link-log.txt");
+                if (QFile::exists(old) && !QFile::exists(q(DebugDir() + "/link-log.txt")))
+                    QFile::rename(old, q(DebugDir() + "/link-log.txt"));
+                // a log over 2 MB starts again (the older part is kept once as .old)
+                QFileInfo info(q(DebugDir() + "/link-log.txt"));
+                if (info.exists() && info.size() > 2 * 1024 * 1024)
+                {
+                    QFile::remove(q(DebugDir() + "/link-log.old.txt"));
+                    QFile::rename(info.absoluteFilePath(), q(DebugDir() + "/link-log.old.txt"));
+                }
+                while (true)
+                {
+                    std::deque<std::string> lines;
+                    {
+                        std::unique_lock<std::mutex> lock(m);
+                        cv.wait(lock, [this] { return !queue.empty(); });
+                        lines.swap(queue);
+                    }
+                    QFile f(q(DebugDir() + "/link-log.txt"));
+                    if (!f.open(QIODevice::Append | QIODevice::Text)) continue;
+                    for (const auto& l : lines) f.write(QByteArray::fromStdString(l));
+                }
+            });
+            thread.detach();
+        }
+    };
+    static Writer writer;
+    const std::string l = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss").toStdString() +
+                          "  " + line + "\n";
+    {
+        std::lock_guard<std::mutex> lock(writer.m);
+        writer.queue.push_back(l);
     }
-    QFile f(q(DebugDir() + "/link-log.txt"));
-    if (!f.open(QIODevice::Append | QIODevice::Text)) return;
-    QString l = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") + "  " + q(line) + "\n";
-    f.write(l.toUtf8());
+    writer.cv.notify_one();
 }
 
-void Session::WriteBackup(const std::string& gameName, const uint8_t* data, uint32_t len, int keep)
+std::atomic<int> Session::backupKeep { 3 };
+std::atomic<int> Session::backupDays { 7 };
+
+void Session::WriteBackup(const std::string& gameName, const uint8_t* data, uint32_t len, int extra)
 {
     QString dir = q(BackupDir(gameName));
     QDir().mkpath(dir);
@@ -195,10 +233,35 @@ void Session::WriteBackup(const std::string& gameName, const uint8_t* data, uint
     }
     writeWholeFile(file, data, len);
 
-    // newest first (the timestamp sorts), delete everything beyond `keep`
+    // newest first (the timestamp sorts): the newest `backupKeep` (+ `extra`) stay, and the
+    // first backup of each of the last `backupDays` days with backups
     QStringList files = QDir(dir).entryList({"*.sav"}, QDir::Files, QDir::Name | QDir::Reversed);
-    for (int i = keep; i < files.size(); i++)
-        QFile::remove(dir + "/" + files[i]);
+    const int keepNewest = std::max(1, backupKeep.load()) + std::max(0, extra);
+    std::vector<bool> keep(files.size(), false);
+    for (int i = 0; i < files.size() && i < keepNewest; i++) keep[i] = true;
+    QString lastDay;
+    int days = 0;
+    int firstOfDay = -1;
+    for (int i = 0; i <= files.size(); i++)
+    {
+        // "<game> yyyy-MM-dd_HH-mm-ss-zzz.sav": the day is before the last '_'
+        QString day;
+        if (i < files.size())
+        {
+            QString base = QFileInfo(files[i]).completeBaseName();
+            day = base.right(23).left(10);
+        }
+        if (i == files.size() || day != lastDay)
+        {
+            if (firstOfDay >= 0 && days <= backupDays.load()) keep[firstOfDay] = true;
+            if (i == files.size()) break;
+            lastDay = day;
+            days++;
+        }
+        firstOfDay = i; // newest first: the last one of a day is its first backup
+    }
+    for (int i = 0; i < files.size(); i++)
+        if (!keep[i]) QFile::remove(dir + "/" + files[i]);
 }
 
 // ---------------------------------------------------------------------------
@@ -576,7 +639,7 @@ std::string Session::RestoreBackup(const std::string& romDir, const std::string&
     std::vector<uint8_t> current;
     if (!readRemote(remote, haveRemote, current)) return TrS("prep.savereadfail");
     // keep what is on the 3DS now (a new backup, so it is the newest one)
-    if (haveRemote) WriteBackup(game, current.data(), (uint32_t)current.size(), 6);
+    if (haveRemote) WriteBackup(game, current.data(), (uint32_t)current.size(), 1);
     if (!uploadNow(remote, data)) return TrS("prep.uploadfail");
 
     // the PC copy follows, so the next start sees both sides equal
