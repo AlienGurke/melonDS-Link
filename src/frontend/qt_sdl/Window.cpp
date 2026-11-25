@@ -730,6 +730,44 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 globalCfg.SetBool("Link.AutoConnect", on);
                 Config::Save();
             });
+            // the picture on the 3DS: 20 a second for 30 fps games too, the WiFi priority class
+            {
+                Link::Get().optionTile20 = globalCfg.GetBool("Link.Tile20");
+                Link::Get().wifiPrio = std::clamp(globalCfg.GetInt("Link.WifiPrio"), 0, 2);
+                QMenu* videoMenu = menu->addMenu("");
+                linkMenus.push_back({videoMenu, "menu.video"});
+                connect(videoMenu, &QMenu::aboutToShow, this, [this, videoMenu]
+                {
+                    videoMenu->clear();
+                    QAction* t20 = videoMenu->addAction(Link::Tr("menu.video.tile20"));
+                    t20->setCheckable(true);
+                    t20->setChecked(Link::Get().optionTile20);
+                    connect(t20, &QAction::toggled, this, [this](bool on)
+                    {
+                        Link::Get().optionTile20 = on;
+                        globalCfg.SetBool("Link.Tile20", on);
+                        Config::Save();
+                    });
+                    videoMenu->addSeparator();
+                    QAction* head = videoMenu->addAction(Link::Tr("menu.video.prio"));
+                    head->setEnabled(false);
+                    auto* group = new QActionGroup(videoMenu);
+                    static const char* keys[] = {"menu.video.prio.video", "menu.video.prio.background", "menu.video.prio.normal"};
+                    for (int p = 0; p < 3; p++)
+                    {
+                        QAction* a = videoMenu->addAction(Link::Tr(keys[p]));
+                        a->setCheckable(true);
+                        a->setChecked(Link::Get().wifiPrio == p);
+                        group->addAction(a);
+                        connect(a, &QAction::triggered, this, [this, p]
+                        {
+                            Link::Get().wifiPrio = p;
+                            globalCfg.SetInt("Link.WifiPrio", p);
+                            Config::Save();
+                        });
+                    }
+                });
+            }
             // save backups: how many of the newest, and for how many days played the first one
             // (settings stored +1, so 0 = never set = the default)
             {

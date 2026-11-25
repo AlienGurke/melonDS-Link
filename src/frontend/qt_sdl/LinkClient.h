@@ -9,11 +9,13 @@
 #ifndef MELONDS_LINKCLIENT_H
 #define MELONDS_LINKCLIENT_H
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -85,8 +87,13 @@ public:
 
     // DS bottom screen for the 3DS. `pixels` is 256x192, 32 bit per pixel;
     // bgra=true: bytes B,G,R,A (software renderer), false: R,G,B,A (OpenGL).
+    // emuFrame: the emulated frame it belongs to (counts up by one per frame).
     // Cheap: converts and hands the frame to the sender thread.
-    void SubmitBottomScreen(const uint32_t* pixels, bool bgra);
+    void SubmitBottomScreen(const uint32_t* pixels, bool bgra, uint64_t emuFrame);
+
+    // settings (3DS Link menu)
+    std::atomic<bool> optionTile20 { false };   // 20 pictures a second for 30 fps games too
+    std::atomic<int> wifiPrio { 0 };            // the picture's WiFi class: 0 video, 1 background, 2 normal
     bool WantsVideo() const { return state.load() == State::Connected && videoWanted.load() && !lidClosed.load(); }
 
     // messages for the on-screen display (connected, lost, ...)
@@ -181,6 +188,8 @@ private:
     void closeSockets();
     void videoWorker();
     void sendTiles(const std::vector<uint16_t>& frame);
+    void inputLoop(intptr_t sock, std::atomic<bool>* run);
+    static std::string markQos(intptr_t sock, const void* toSockaddrIn, bool voice, bool background);
 
     std::atomic<State> state { State::Disconnected };
     std::atomic<uint32_t> connectCount { 0 };
@@ -222,34 +231,101 @@ private:
     uint32_t restoreToken = 0;
 
     // video: latest frame waiting to be sent + what the 3DS should have
-    std::mutex videoMutex;
+    std::mutex videoMutex;                   // the receipts below
+    std::mutex frameMutex;                   // the waiting frame
     std::condition_variable videoCv;
     std::vector<uint16_t> pendingFrame;     // 256x192 RGB565
+    uint64_t pendingEmuFrame = 0;
     bool framePending = false;
+    std::atomic<uint32_t> framesOverwritten { 0 };  // came while the last one still waited
     std::atomic<bool> videoResync { true };  // resend everything (new connection)
     std::thread videoThread;
     // per tile: which picture content the 3DS shows (exact source pixels) and
     // in which quality (0 exact, 1 half, 2 quarter, 255 unknown -> resend)
     std::vector<uint16_t> shownSource;
     std::vector<uint8_t> tileLevel;
-    std::vector<uint16_t> lastFrame;        // for refining while nothing new comes in
-    struct SentPacket { uint32_t seq; int64_t sentMs; std::vector<uint16_t> tiles; };
+    std::vector<uint16_t> lastFrame;        // the newest picture (for repairs while nothing new comes)
+    struct SentPacket
+    {
+        uint32_t seq;
+        int64_t sentMs;
+        std::vector<uint16_t> tiles;
+        bool fec = false;       // parity after the frame: may still be rebuilt on the 3DS
+        uint32_t frameEnd = 0;  // seq of the frame's last packet
+    };
     std::deque<SentPacket> inFlight;        // sent, not yet confirmed by the 3DS
     uint32_t videoFrameId = 0;
     uint32_t videoSeq = 0;
     uint32_t refreshCursor = 0;
     uint32_t scanStart = 0;
-    // latest receipt from the 3DS (guarded by videoMutex)
-    // adaptive data rate (AIMD on the packet loss reported by the 3DS)
-    double budgetBytes = 24 * 1024;
+    double budgetBytes = 1.5e6;             // data rate, bytes per second
     uint32_t statReceived = 0, statLost = 0;
+    // latest receipt from the 3DS (guarded by videoMutex); every confirmed seq is kept in
+    // the ring (the input thread fills it): a receipt covers only the last 64 packets
     bool ackNew = false;
     bool ackValid = false;
     uint32_t ackSeq = 0;
     uint64_t ackMask = 0;
+    static constexpr uint32_t kAckRing = 4096;
+    std::array<uint32_t, kAckRing> ackedRing {};
     void processAcks();
     uint8_t videoAddr[16] = {};             // sockaddr_in of the 3DS video port
     std::atomic<bool> haveVideoAddr { false };
+    intptr_t echoSock = -1;                 // the echo goes out with the top WiFi priority (udpMutex)
+
+    // what the 3DS understands (LINK_CMD_VIDEOCAPS)
+    bool tileRs = false;                    // parity packets
+    bool tileTs = false;                    // time stamps: it paces the pictures by them
+    bool tileLz4 = false, tileLz4x = false; // LZ4 packed packets (x: with the packed size)
+    std::atomic<bool> echoOk { false };     // it measures the input round trip
+    std::atomic<uint32_t> emuClockOff { 0 };// our clock - the newest picture's time stamp
+
+    // steady picture rate (tiles every tileDiv-th DS frame), see tilePace
+    bool tileDivFits(int d) const;
+    void tileSlower();
+    bool tilesPending() const;
+    void tilePace();
+    void packTilePackets(std::vector<std::vector<uint8_t>>& packets,
+                         std::vector<std::vector<uint16_t>>& packetTiles);
+    int tileDiv = 2;
+    double tileContentGap = 2;              // frames between the game's pictures, lately
+    bool tileHeld = false;                  // a new picture waits for its turn
+    uint64_t curEmuFrame = 0, tileLastEmu = 0, tileSentEmu = 0, tileSendEmu = 0, prevChangedEmu = 0;
+    double tileFrameBytes = 0;              // bytes per picture lately
+    int64_t tileRoomSince = 0;
+    uint32_t tileSameCount = 0;
+    uint32_t tileLastMade = 0;
+    double lz4Ratio = 0.65;
+    int64_t tilesSentMs = 0;
+
+    // receipts: delay of each packet until confirmed (spotting a queue in the WiFi)
+    void noteAckDelay(int64_t delay, int64_t now);
+    int64_t ackMinCur = 1000, ackMinPrev = 1000, ackMinSince = 0;
+    double ackDelayRecent = 0;
+    int64_t queueCutMs = 0;
+    int32_t acksBehind = 0;
+    double tilesRateActual = 0;
+    int64_t tilesRateLastMs = 0;
+    std::atomic<bool> queueSqueeze { false };
+    uint64_t watchReceived = 0, watchLost = 0;
+
+    // the 3DS's input packets: gaps mean the WiFi is too full (the picture makes room)
+    int64_t lastInputMs = 0;
+    std::atomic<int64_t> inputGapMax { 0 };
+    std::atomic<uint32_t> inputGaps { 0 }, inputCount { 0 };
+    uint32_t inputGapsSeen = 0, inputGapsLogged = 0;
+    std::atomic<bool> inputSqueeze { false };
+
+    // statistics for the log (every 10 s)
+    void videoStats(int64_t now);
+    bool statsReply(std::vector<uint8_t>& out);
+    std::future<std::vector<uint8_t>> statsFuture;
+    int64_t statsSince = 0;
+    uint64_t statsFrames = 0, statsBytes = 0, statsReceived = 0, statsLost = 0;
+    int64_t statsAckDelaySum = 0, statsAckDelayN = 0, statsAckDelayMax = 0, statsQueueCuts = 0;
+    double statsSendMs = 0, statsSendMaxMs = 0, statsEncodeMs = 0;
+    uint32_t statsSrcGaps[4] = {};
+    size_t statsCmpRaw = 0, statsCmpLz4 = 0;
 
     std::atomic<uint64_t> lastWireBytes { 0 };
     std::mutex tuneMutex;

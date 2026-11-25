@@ -58,6 +58,7 @@
 #include "LinkClient.h"
 #include "LinkLang.h"
 #include "LinkSession.h"
+#include "LinkPacing.h"
 #include <QDateTime>
 #include <QDir>
 #include <QImage>
@@ -90,13 +91,13 @@ static void linkCaptureReset(bool contextAlive)
 // melonDS Link: hand the DS bottom screen (256x192) to the 3DS sender.
 // Software renderer: RAM framebuffer. OpenGL renderer: scale the bottom layer
 // of the output texture down to 256x192 on the GPU and read it back.
-static void linkCaptureBottomScreen(melonDS::NDS* nds)
+static void linkCaptureBottomScreen(melonDS::NDS* nds, uint64_t emuFrame)
 {
     void* top = nullptr;
     void* bottom = nullptr;
     if (nds->GPU.GetFramebuffers(&top, &bottom))
     {
-        if (bottom) Link::Get().SubmitBottomScreen((const uint32_t*)bottom, true);
+        if (bottom) Link::Get().SubmitBottomScreen((const uint32_t*)bottom, true, emuFrame);
         return;
     }
 #ifdef OGLRENDERER_ENABLED
@@ -156,7 +157,7 @@ static void linkCaptureBottomScreen(melonDS::NDS* nds)
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
 
     // texture row 0 is DS line 0 (same as the software path), so no flip
-    Link::Get().SubmitBottomScreen(pixels.data(), false);
+    Link::Get().SubmitBottomScreen(pixels.data(), false, emuFrame);
 #endif
 }
 
@@ -325,6 +326,11 @@ void EmuThread::run()
 
     char melontitle[100];
 
+    // melonDS Link: how long each part of a frame takes (for the log, see LinkPacing.h)
+    auto linkMs = [perfCountsSec] { return SDL_GetPerformanceCounter() * perfCountsSec * 1000.0; };
+    uint64_t linkEmuFrame = 0;     // emulated frames (time stamps of the 3DS's pictures)
+    double linkSettingsAt = 0;
+
     bool fastforward = false;
     bool slowmo = false;
     emuInstance->fastForwardToggled = false;
@@ -358,6 +364,8 @@ void EmuThread::run()
         if (emuStatus == emuStatus_Running || emuStatus == emuStatus_FrameStep)
         {
             if (emuStatus == emuStatus_FrameStep) emuStatus = emuStatus_Paused;
+            Link::Pacing::FrameTimes linkTimes;
+            const double linkStart = linkMs();
 
             if (emuInstance->hotkeyPressed(HK_SolarSensorDecrease))
             {
@@ -490,6 +498,7 @@ void EmuThread::run()
 
             // emulate
             u32 nlines;
+            double linkT = linkMs();
             if (emuInstance->nds->GPU.GetRenderer().NeedsShaderCompile())
             {
                 compileShaders();
@@ -499,22 +508,28 @@ void EmuThread::run()
             {
                 nlines = emuInstance->nds->RunFrame();
             }
+            linkEmuFrame++;
+            linkTimes.emu = linkMs() - linkT;
+            linkTimes.lines = nlines;
+            linkT = linkMs();
 
             int shotMode;
             if (emuInstance->instanceID == 0 && Link::Get().TakeScreenshotRequest(shotMode))
                 linkScreenshot(emuInstance->nds, shotMode);
 
-            // melonDS Link: send the bottom screen to the 3DS, at most ~60 times a second
+            // melonDS Link: send the bottom screen to the 3DS - every frame (the sender picks
+            // the steady rate by when they were made); fast forward: at most ~120 a second
             if (emuInstance->instanceID == 0 && Link::Get().WantsVideo())
             {
                 static auto lastLinkFrame = std::chrono::steady_clock::time_point();
                 auto now = std::chrono::steady_clock::now();
-                if (now - lastLinkFrame >= std::chrono::microseconds(16000))
+                if (now - lastLinkFrame >= std::chrono::microseconds(8000))
                 {
                     lastLinkFrame = now;
-                    linkCaptureBottomScreen(emuInstance->nds);
+                    linkCaptureBottomScreen(emuInstance->nds, linkEmuFrame);
                 }
             }
+            linkTimes.capture = linkMs() - linkT;
 
             if (emuInstance->ndsSave)
                 emuInstance->ndsSave->CheckFlush();
@@ -525,7 +540,9 @@ void EmuThread::run()
             if (emuInstance->firmwareSave)
                 emuInstance->firmwareSave->CheckFlush();
 
+            linkT = linkMs();
             emuInstance->drawScreen();
+            linkTimes.draw = linkMs() - linkT;
 
 #ifdef MELONCAP
             MelonCap::Update();
@@ -581,13 +598,16 @@ void EmuThread::run()
                 emuInstance->audioVolume = volumeLevel * (256.0 / 31.0);
             }
 
+            linkT = linkMs();
             if (emuInstance->doAudioSync && !(fastforward || slowmo))
                 emuInstance->audioSync();
+            linkTimes.audio = linkMs() - linkT;
 
             double frametimeStep = nlines / (emuInstance->curFPS * 263.0);
 
             if (frametimeStep < 0.001) frametimeStep = 0.001;
 
+            linkT = linkMs();
             if (emuInstance->doLimitFPS)
             {
                 double curtime = SDL_GetPerformanceCounter() * perfCountsSec;
@@ -608,6 +628,7 @@ void EmuThread::run()
 
                 lastTime = curtime;
             }
+            linkTimes.limiter = linkMs() - linkT;
 
             nframes++;
             if (nframes >= 30)
@@ -629,11 +650,39 @@ void EmuThread::run()
                 snprintf(melontitle, sizeof(melontitle), "[%d/%.0f] melonDS " MELONDS_VERSION, fps, actualfps);
                 changeWindowTitle(melontitle);
             }
+
+            if (emuInstance->instanceID == 0)
+            {
+                linkTimes.fast = fastforward || slowmo;
+                linkTimes.total = linkMs() - linkStart;
+                Link::Pacing::Frame(linkTimes);
+                // the settings that matter for the timing (logged when they change)
+                if (linkStart - linkSettingsAt > 2000)
+                {
+                    linkSettingsAt = linkStart;
+                    static const char* renderers[] = {"software", "OpenGL", "OpenGL compute"};
+                    int r = globalCfg.GetInt("3D.Renderer");
+                    char line[600];
+                    snprintf(line, sizeof(line),
+                             "renderer %s, %dx resolution, threaded 3D %d, OpenGL display %d, VSync %d "
+                             "(interval %d), limit framerate %d, audio sync %d, target %.2f fps, JIT %d, "
+                             "console %s, audio interpolation %d",
+                             r >= 0 && r < 3 ? renderers[r] : "?", globalCfg.GetInt("3D.GL.ScaleFactor"),
+                             globalCfg.GetBool("3D.Soft.Threaded"), globalCfg.GetBool("Screen.UseGL"),
+                             globalCfg.GetBool("Screen.VSync"), globalCfg.GetInt("Screen.VSyncInterval"),
+                             emuInstance->doLimitFPS, emuInstance->doAudioSync, emuInstance->targetFPS,
+                             globalCfg.GetBool("JIT.Enable"),
+                             emuInstance->nds->ConsoleType == 1 ? "DSi" : "DS",
+                             globalCfg.GetInt("Audio.Interpolation"));
+                    Link::Pacing::Settings(line);
+                }
+            }
         }
         else
         {
             // paused
             nframes = 0;
+            if (emuInstance->instanceID == 0) Link::Pacing::Paused();
             lastTime = SDL_GetPerformanceCounter() * perfCountsSec;
             lastMeasureTime = lastTime;
 

@@ -43,6 +43,8 @@
 #include "OSD_shaders.h"
 #include "font.h"
 #include "version.h"
+#include "LinkPacing.h"
+#include <chrono>
 
 using namespace melonDS;
 
@@ -950,6 +952,17 @@ void ScreenPanelNative::drawScreen()
 
 void ScreenPanelNative::paintEvent(QPaintEvent* event)
 {
+    // melonDS Link: when pictures reach the window (for the log)
+    struct PaintTimer
+    {
+        bool main;
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        ~PaintTimer()
+        {
+            if (main)
+                Link::Pacing::Presented(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        }
+    } paintTimer{emuInstance->getInstanceID() == 0 && emuInstance->getEmuThread()->emuIsActive()};
     QPainter painter(this);
 
     // fill background
@@ -1434,7 +1447,11 @@ void ScreenPanelGL::drawScreen()
         osdMutex.unlock();
     }
 
+    // melonDS Link: when pictures reach the window (for the log)
+    auto swapStart = std::chrono::steady_clock::now();
     glContext->SwapBuffers();
+    if (emuInstance->getInstanceID() == 0)
+        Link::Pacing::Presented(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - swapStart).count());
 }
 
 qreal ScreenPanelGL::devicePixelRatioFromScreen() const

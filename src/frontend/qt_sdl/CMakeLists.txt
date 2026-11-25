@@ -12,6 +12,7 @@ set(SOURCES_QT_SDL
     EmuInstanceInput.cpp
     LinkClient.cpp
     LinkSession.cpp
+    LinkPacing.cpp
     LinkRomDialog.cpp
     LinkLang.cpp
     lz4/lz4.c
@@ -106,6 +107,7 @@ target_link_libraries(melonDS PRIVATE net-utils)
 
 if (WIN32)
     target_link_libraries(melonDS PUBLIC opengl32)
+    target_link_libraries(melonDS PRIVATE qwave) # melonDS Link: WiFi priority classes
 
     target_sources(melonDS PRIVATE
         ../duckstation/gl/context_wgl.cpp
