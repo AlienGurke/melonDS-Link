@@ -751,6 +751,7 @@ void Client::worker(std::string host)
             if (remoteLang.empty()) remoteLang = "en";
         }
         videoWanted = (hello.flags & LINK_HELLO_VIDEO_OFF) == 0;
+        idle = false;
         {
             // a fresh connection: the 3DS is open (it reports otherwise right away)
             std::lock_guard<std::mutex> lock(inputMutex);
@@ -848,8 +849,9 @@ void Client::worker(std::string host)
             int64_t t = nowMs();
             if (t - lastHello >= 1000)
             {
-                uint32_t helo = LINK_UDP_HELLO;
-                sendto(us, (const char*)&helo, sizeof(helo), 0, (sockaddr*)&udpAddr, sizeof(udpAddr));
+                // + who we are: with Azahar connected too, the 3DS tells the two apart
+                uint32_t helo[2] = {LINK_UDP_HELLO, LINK_CLIENT_MELONDS};
+                sendto(us, (const char*)helo, sizeof(helo), 0, (sockaddr*)&udpAddr, sizeof(udpAddr));
                 lastHello = t;
             }
             // asking for events is the keep-alive at the same time (no extra ping); never
@@ -913,6 +915,22 @@ void Client::inputLoop(intptr_t sock, std::atomic<bool>* run)
         while (recvfrom(us, (char*)&pkt, sizeof(pkt), 0, (sockaddr*)&from, &flen) == (int)sizeof(pkt))
         {
             if (pkt.magic != LINK_MAGIC) continue;
+            // Azahar is the active emulator on the 3DS: no buttons, no picture, no echo -
+            // only the state of the console
+            const bool nowIdle = (pkt.flags & LINK_INPUT_IDLE) != 0;
+            if (nowIdle != idle.load())
+            {
+                idle = nowIdle;
+                if (!nowIdle) videoResync = true;   // the 3DS shows our picture again: all of it
+                log(nowIdle ? "3DS: Azahar is the active emulator - melonDS waits"
+                            : "3DS: melonDS is the active emulator again");
+            }
+            if (nowIdle)
+            {
+                pkt.keys = 0;
+                pkt.cpadX = pkt.cpadY = pkt.cstickX = pkt.cstickY = 0;
+                pkt.flags = LINK_INPUT_IDLE;
+            }
             {
                 std::lock_guard<std::mutex> lock(inputMutex);
                 // drop reordered packets (with wrap-around)
@@ -950,7 +968,7 @@ void Client::inputLoop(intptr_t sock, std::atomic<bool>* run)
             // every 8th packet straight back: the 3DS measures the round trip; with our
             // clock and how far it is ahead of the pictures' time stamps, so the 3DS works
             // out how long after us it shows each picture
-            if (echoOk && haveVideoAddr && (pkt.id & 7) == 0)
+            if (echoOk && haveVideoAddr && !nowIdle && (pkt.id & 7) == 0)
             {
                 uint32_t echo[4] = {LINK_ECHO_MAGIC, pkt.id, (uint32_t)nowMs(), emuClockOff.load()};
                 sockaddr_in to;
@@ -1039,7 +1057,7 @@ void Client::videoWorker()
         if (gotFrame) emuClockOff = (uint32_t)nowMs() - madeMs(curEmuFrame);
         if (!haveVideoAddr) continue;
         videoStats(nowMs());
-        if (!videoWanted || lidClosed) continue;
+        if (!videoWanted || lidClosed || idle) continue;
 
         // statistics: how many frames apart the picture changes
         if (gotFrame && frame != lastFrame)

@@ -94,7 +94,7 @@ public:
     // settings (3DS Link menu)
     std::atomic<bool> optionTile20 { false };   // 20 pictures a second for 30 fps games too
     std::atomic<int> wifiPrio { 0 };            // the picture's WiFi class: 0 video, 1 background, 2 normal
-    bool WantsVideo() const { return state.load() == State::Connected && videoWanted.load() && !lidClosed.load(); }
+    bool WantsVideo() const { return state.load() == State::Connected && videoWanted.load() && !lidClosed.load() && !idle.load(); }
 
     // messages for the on-screen display (connected, lost, ...)
     bool PopMessage(std::string& msg);
@@ -222,6 +222,7 @@ private:
     std::atomic<bool> resumeWanted { false };
     std::atomic<bool> videoWanted { true };   // bottom screen picture on (3DS setting)
     std::atomic<bool> lidClosed { false };    // closed (and awake): nobody sees the picture
+    std::atomic<bool> idle { false };         // Azahar is the active emulator on the 3DS
     std::atomic<uint32_t> options { 0 };      // LINK_OPT_* last sent
     bool lostByLid = false;                   // worker thread only
     std::string remoteLang = "en";

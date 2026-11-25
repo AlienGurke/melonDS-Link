@@ -14,7 +14,10 @@
         Responses echo `cmd | LINK_RESP` and `seq`, and carry a LinkStatus.
       - UDP (LINK_UDP_PORT on the 3DS): input stream 3DS -> PC.
         The PC sends one LINK_UDP_HELLO datagram from the socket it wants
-        to receive on; the 3DS then streams LinkInputPacket to that address.
+        to receive on (+ u32 LINK_CLIENT_*: which emulator it is); the 3DS then
+        streams LinkInputPacket to that address. Both emulators may be connected
+        at once: the one whose game is played gets the input, the other one only
+        packets with LINK_INPUT_IDLE (no buttons) - it sends no picture then.
       - UDP (LINK_VIDEO_PORT on the 3DS): bottom screen PC -> 3DS as
         changed 8x8 tiles (RGB565). Lost tiles heal through a rolling refresh.
 */
@@ -25,7 +28,7 @@
 #include <stdint.h>
 
 #define LINK_MAGIC          0x4B4C444Du /* "MDLK" */
-#define LINK_VERSION        15u
+#define LINK_VERSION        16u
 #define LINK_TCP_PORT       6543
 #define LINK_UDP_PORT       6544
 #define LINK_VIDEO_PORT     6545   /* UDP, PC -> 3DS: bottom screen tiles */
@@ -417,6 +420,8 @@ enum { LINK_SHOT_BOTH = 0, LINK_SHOT_TOP = 1, LINK_SHOT_BOTTOM = 2, LINK_SHOT_SE
 #define LINK_INPUT_DSTOUCH  1u     /* dsTouchX/Y valid: the DS screen is being touched */
 #define LINK_INPUT_ZOOM     2u     /* 3DS shows the DS screen enlarged */
 #define LINK_INPUT_VIDEOACK 4u     /* videoAckSeq/Mask valid */
+#define LINK_INPUT_IDLE     16u    /* the other emulator is the active one: no buttons, no
+                                      picture wanted, no echo - only the console state */
 #define LINK_INPUT_NEEDKEY  8u     /* H.264: the 3DS lost a frame it could not rebuild and
                                       waits for a key frame (set until one is decoded) */
 
