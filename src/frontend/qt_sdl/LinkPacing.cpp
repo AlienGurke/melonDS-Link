@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <atomic>
 #include <mutex>
 
 namespace Link
@@ -51,7 +52,9 @@ struct Stats
     // time between the ends of two frames
     unsigned gapsOver20 = 0, gapsOver25 = 0, gapsOver34 = 0, gapsUnder12 = 0;
     double gapMax = 0;
-    Part emu, capture, draw, audio, limiter, other;
+    Part emu, capture, draw, audio, limiter, other, input, messages, glCurrent, saves, compare;
+    // new pictures per screen, frames shown / left out (setting: skip duplicates)
+    unsigned newTop = 0, newBottom = 0, checked = 0, presentedFrames = 0, skipped = 0;
     unsigned drawOver8 = 0;
     // speed per second (emulated time / real time)
     double speedMin = 1e9, speedMax = 0;
@@ -71,6 +74,7 @@ double g_secStart = 0, g_secLines = 0;
 double g_lastPresent = 0;
 int g_lastApart = 0;
 std::string g_settings, g_settingsLogged;
+std::atomic<bool> g_skipDuplicates { false };
 
 }
 
@@ -94,7 +98,13 @@ void Frame(const FrameTimes& t)
     s.draw.add(t.draw);
     s.audio.add(t.audio);
     s.limiter.add(t.limiter);
-    const double other = std::max(0.0, t.total - t.emu - t.capture - t.draw - t.audio - t.limiter);
+    s.input.add(t.input);
+    s.messages.add(t.messages);
+    s.glCurrent.add(t.glCurrent);
+    s.saves.add(t.saves);
+    s.compare.add(t.compare);
+    const double other = std::max(0.0, t.total - t.emu - t.capture - t.draw - t.audio - t.limiter -
+                                           t.input - t.messages - t.glCurrent - t.saves - t.compare);
     s.other.add(other);
     if (t.draw > 8) s.drawOver8++;
 
@@ -110,10 +120,12 @@ void Frame(const FrameTimes& t)
         {
             if (s.hitches.size() < 20)
                 s.hitches.push_back(strf("%s: %.1f ms since the last frame - emulation %.1f, bottom screen for "
-                                         "the 3DS %.1f, drawing %.1f, audio sync %.1f, frame limiter %.1f, "
-                                         "rest %.1f ms",
+                                         "the 3DS %.1f, new picture? %.1f, drawing %.1f, audio sync %.1f, "
+                                         "frame limiter %.1f, keys %.1f, window messages %.1f, OpenGL context "
+                                         "%.1f, save %.1f, rest %.1f ms",
                                          QTime::currentTime().toString("HH:mm:ss.zzz").toStdString().c_str(),
-                                         gap, t.emu, t.capture, t.draw, t.audio, t.limiter, other));
+                                         gap, t.emu, t.capture, t.compare, t.draw, t.audio, t.limiter, t.input,
+                                         t.messages, t.glCurrent, t.saves, other));
             else
                 s.hitchesMore++;
         }
@@ -132,6 +144,26 @@ void Frame(const FrameTimes& t)
         g_secStart = now;
         g_secLines = 0;
     }
+}
+
+void Pictures(bool newTop, bool newBottom, bool presented)
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_s.checked++;
+    if (newTop) g_s.newTop++;
+    if (newBottom) g_s.newBottom++;
+    if (presented) g_s.presentedFrames++;
+    else g_s.skipped++;
+}
+
+bool SkipDuplicates()
+{
+    return g_skipDuplicates.load();
+}
+
+void SetSkipDuplicates(bool on)
+{
+    g_skipDuplicates = on;
 }
 
 void Paused()
@@ -188,12 +220,21 @@ std::vector<std::string> Take()
             "20/25/34 ms %u/%u/%u (longest %.1f ms), under 12 ms %u; a frame on average: emulation "
             "%.1f ms (%.1f at most), bottom screen for the 3DS %.1f ms (%.1f at most), drawing %.1f ms "
             "(%.1f at most, over 8 ms %u), audio sync %.1f ms (%.1f at most), frame limiter %.1f ms, "
+            "keys %.1f ms (%.1f at most), window messages %.1f ms (%.1f at most), OpenGL context %.1f ms "
+            "(%.1f at most), save %.1f ms (%.1f at most), new picture? %.1f ms (%.1f at most), "
             "rest %.1f ms (%.1f at most)",
             s.frames, secs, s.speedMax > 0 ? s.speedMin : 0.0, s.speedMax,
             s.fastFrames ? strf(", fast forward %u", s.fastFrames).c_str() : "",
             s.gapsOver20, s.gapsOver25, s.gapsOver34, s.gapMax, s.gapsUnder12,
             s.emu.sum / n, s.emu.max, s.capture.sum / n, s.capture.max, s.draw.sum / n, s.draw.max,
-            s.drawOver8, s.audio.sum / n, s.audio.max, s.limiter.sum / n, s.other.sum / n, s.other.max));
+            s.drawOver8, s.audio.sum / n, s.audio.max, s.limiter.sum / n,
+            s.input.sum / n, s.input.max, s.messages.sum / n, s.messages.max, s.glCurrent.sum / n, s.glCurrent.max,
+            s.saves.sum / n, s.saves.max, s.compare.sum / n, s.compare.max, s.other.sum / n, s.other.max));
+        if (s.checked > 0)
+            out.push_back(strf("melonds: new pictures top %u, bottom %u in %u frames (%.1f / %.1f a second); "
+                               "doubles not shown %s: %u frames shown, %u left out",
+                               s.newTop, s.newBottom, s.checked, s.newTop / secs, s.newBottom / secs,
+                               g_skipDuplicates ? "on" : "off", s.presentedFrames, s.skipped));
         if (s.presents > 0)
             out.push_back(strf(
                 "melonds: to the window %u pictures; 1/2/3/4+ DS frames apart %u/%u/%u/%u, rhythm changes "

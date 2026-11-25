@@ -20,6 +20,8 @@
 #include <QProgressDialog>
 
 extern QString emuDirectory;
+extern QString linkDirectory;
+extern QStringList linkMoveNotes;
 
 namespace Link
 {
@@ -122,7 +124,7 @@ Session::~Session()
 
 std::string Session::BaseDir()
 {
-    return (emuDirectory + "/melonDS-Link").toStdString();
+    return linkDirectory.toStdString();
 }
 
 std::string Session::DebugDir()
@@ -206,11 +208,17 @@ void Session::Log(const std::string& line)
         }
     };
     static Writer writer;
-    const std::string l = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss").toStdString() +
-                          "  " + line + "\n";
+    const std::string stamp = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss").toStdString() + "  ";
     {
         std::lock_guard<std::mutex> lock(writer.m);
-        writer.queue.push_back(l);
+        // what moving the folders to %APPDATA% did (main.cpp), once
+        static bool notesDone = false;
+        if (!notesDone)
+        {
+            notesDone = true;
+            for (const QString& n : linkMoveNotes) writer.queue.push_back(stamp + "folder: " + n.toStdString() + "\n");
+        }
+        writer.queue.push_back(stamp + line + "\n");
     }
     writer.cv.notify_one();
 }

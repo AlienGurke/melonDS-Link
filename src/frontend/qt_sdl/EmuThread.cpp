@@ -74,6 +74,15 @@ using namespace melonDS;
 static GLuint linkCapReadFb = 0, linkCapDrawFb = 0, linkCapRb = 0;
 #endif
 
+// melonDS Link: GL objects for spotting unchanged pictures (see linkFrameChanged)
+#ifdef OGLRENDERER_ENABLED
+static GLuint linkCmpProg = 0, linkCmpVao = 0, linkCmpFb = 0, linkCmpRb = 0, linkCmpPrev = 0;
+static GLuint linkCmpQuery[2] = {0, 0}, linkCmpCopyFb[2] = {0, 0};
+static GLint linkCmpW = 0, linkCmpH = 0;
+static bool linkCmpFailed = false;
+#endif
+static std::vector<uint32_t> linkPrevSoft[2];
+
 // contextAlive: the context is still current (renderer change) -> delete them
 static void linkCaptureReset(bool contextAlive)
 {
@@ -85,6 +94,178 @@ static void linkCaptureReset(bool contextAlive)
         glDeleteRenderbuffers(1, &linkCapRb);
     }
     linkCapReadFb = linkCapDrawFb = linkCapRb = 0;
+    if (contextAlive && linkCmpProg)
+    {
+        glDeleteProgram(linkCmpProg);
+        glDeleteVertexArrays(1, &linkCmpVao);
+        glDeleteFramebuffers(1, &linkCmpFb);
+        glDeleteFramebuffers(2, linkCmpCopyFb);
+        glDeleteRenderbuffers(1, &linkCmpRb);
+        glDeleteTextures(1, &linkCmpPrev);
+        glDeleteQueries(2, linkCmpQuery);
+    }
+    linkCmpProg = linkCmpVao = linkCmpFb = linkCmpRb = linkCmpPrev = 0;
+    linkCmpQuery[0] = linkCmpQuery[1] = linkCmpCopyFb[0] = linkCmpCopyFb[1] = 0;
+    linkCmpW = linkCmpH = 0;
+    linkCmpFailed = false;
+#endif
+    linkPrevSoft[0].clear();
+    linkPrevSoft[1].clear();
+}
+
+// melonDS Link: did the picture of each screen change since the last frame? (for showing
+// only new pictures - frame generation then gets no doubles - and for counting them).
+// Software renderer: the two framebuffers compared in RAM. OpenGL: on the GPU at full
+// resolution - a pass that drops every pixel equal to the last frame's, an occlusion query
+// counts what is left; then the frame is kept for the next time. Unknown: "changed".
+static void linkFrameChanged(melonDS::NDS* nds, bool& top, bool& bottom)
+{
+    top = bottom = true;
+    void* fb[2] = {nullptr, nullptr};
+    if (nds->GPU.GetFramebuffers(&fb[0], &fb[1]))
+    {
+        bool* out[2] = {&top, &bottom};
+        for (int i = 0; i < 2; i++)
+        {
+            if (!fb[i]) continue;
+            const uint32_t* px = (const uint32_t*)fb[i];
+            auto& prev = linkPrevSoft[i];
+            *out[i] = prev.size() != 256 * 192 || memcmp(prev.data(), px, 256 * 192 * 4) != 0;
+            prev.assign(px, px + 256 * 192);
+        }
+        return;
+    }
+#ifdef OGLRENDERER_ENABLED
+    if (!fb[0] || linkCmpFailed) return;
+    GLuint tex = *(GLuint*)fb[0];
+
+    GLint prevRead = 0, prevDraw = 0, prevProg = 0, prevVao = 0, prevActive = 0, prevTex0 = 0, prevTex1 = 0;
+    GLint prevView[4];
+    GLboolean prevMask[4];
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prevDraw);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActive);
+    glGetIntegerv(GL_VIEWPORT, prevView);
+    glGetBooleanv(GL_COLOR_WRITEMASK, prevMask);
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &prevTex0);
+    glActiveTexture(GL_TEXTURE1);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &prevTex1);
+
+    GLint w = 0, h = 0;
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D_ARRAY, 0, GL_TEXTURE_HEIGHT, &h);
+
+    bool fresh = false;
+    if (!linkCmpProg)
+    {
+        static const char* vs = R"(#version 140
+void main()
+{
+    vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));
+    gl_Position = vec4(p, 0.0, 1.0);
+}
+)";
+        static const char* fs = R"(#version 140
+uniform sampler2DArray Cur;
+uniform sampler2DArray Prev;
+uniform int Layer;
+out vec4 oColor;
+void main()
+{
+    ivec3 p = ivec3(ivec2(gl_FragCoord.xy), Layer);
+    if (texelFetch(Cur, p, 0) == texelFetch(Prev, p, 0)) discard;
+    oColor = vec4(1.0);
+}
+)";
+        if (!melonDS::OpenGL::CompileVertexFragmentProgram(linkCmpProg, vs, fs, "LinkFrameCompare", {}, {{"oColor", 0}}))
+        {
+            linkCmpProg = 0;
+            linkCmpFailed = true;   // no comparing: every frame counts as new
+        }
+        else
+        {
+            glGenVertexArrays(1, &linkCmpVao);
+            glGenFramebuffers(1, &linkCmpFb);
+            glGenFramebuffers(2, linkCmpCopyFb);
+            glGenRenderbuffers(1, &linkCmpRb);
+            glGenTextures(1, &linkCmpPrev);
+            glGenQueries(2, linkCmpQuery);
+        }
+    }
+    if (linkCmpProg && (w != linkCmpW || h != linkCmpH))
+    {
+        // new size (resolution changed): new buffers, this frame counts as new
+        linkCmpW = w;
+        linkCmpH = h;
+        glBindTexture(GL_TEXTURE_2D_ARRAY, linkCmpPrev);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, w, h, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindRenderbuffer(GL_RENDERBUFFER, linkCmpRb);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_R8, w, h);
+        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, linkCmpFb);
+        glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, linkCmpRb);
+        fresh = true;
+    }
+
+    if (linkCmpProg && w > 0 && h > 0)
+    {
+        if (!fresh)
+        {
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, linkCmpFb);
+            glViewport(0, 0, w, h);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            glUseProgram(linkCmpProg);
+            glBindVertexArray(linkCmpVao);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, linkCmpPrev);
+            glUniform1i(glGetUniformLocation(linkCmpProg, "Cur"), 0);
+            glUniform1i(glGetUniformLocation(linkCmpProg, "Prev"), 1);
+            GLint layerLoc = glGetUniformLocation(linkCmpProg, "Layer");
+            for (int i = 0; i < 2; i++)
+            {
+                glUniform1i(layerLoc, i);
+                glBeginQuery(GL_SAMPLES_PASSED, linkCmpQuery[i]);
+                glDrawArrays(GL_TRIANGLES, 0, 3);
+                glEndQuery(GL_SAMPLES_PASSED);
+            }
+            GLuint changed[2] = {1, 1};
+            glGetQueryObjectuiv(linkCmpQuery[0], GL_QUERY_RESULT, &changed[0]);
+            glGetQueryObjectuiv(linkCmpQuery[1], GL_QUERY_RESULT, &changed[1]);
+            top = changed[0] != 0;
+            bottom = changed[1] != 0;
+        }
+        // keep this frame for the next comparison
+        for (int i = 0; i < 2; i++)
+        {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, linkCmpCopyFb[0]);
+            glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 0, i);
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, linkCmpCopyFb[1]);
+            glFramebufferTextureLayer(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, linkCmpPrev, 0, i);
+            glDrawBuffer(GL_COLOR_ATTACHMENT0);
+            glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        }
+    }
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, prevTex1);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, prevTex0);
+    glActiveTexture(prevActive);
+    glBindVertexArray(prevVao);
+    glUseProgram(prevProg);
+    glColorMask(prevMask[0], prevMask[1], prevMask[2], prevMask[3]);
+    glViewport(prevView[0], prevView[1], prevView[2], prevView[3]);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
 #endif
 }
 
@@ -336,12 +517,18 @@ void EmuThread::run()
     emuInstance->fastForwardToggled = false;
     emuInstance->slowmoToggled = false;
 
+    double linkPrevMsgMs = 0;      // handleMessages at the end of the last loop
+    double linkLastPresent = 0;
     while (emuStatus != emuStatus_Exit)
     {
+        const double linkLoopStart = linkMs();
         if (emuInstance->instanceID == 0)
             MPInterface::Get().Process();
+        const double linkMpMs = linkMs() - linkLoopStart;
 
+        double linkIn = linkMs();
         emuInstance->inputProcess();
+        const double linkInputMs = linkMs() - linkIn;
 
         if (emuInstance->instanceID == 0)
         {
@@ -366,6 +553,8 @@ void EmuThread::run()
             if (emuStatus == emuStatus_FrameStep) emuStatus = emuStatus_Paused;
             Link::Pacing::FrameTimes linkTimes;
             const double linkStart = linkMs();
+            linkTimes.input = linkInputMs + linkMpMs;
+            linkTimes.messages = linkPrevMsgMs;
 
             if (emuInstance->hotkeyPressed(HK_SolarSensorDecrease))
             {
@@ -421,8 +610,12 @@ void EmuThread::run()
                 dsi->I2C.GetBPTWL()->ProcessVolumeSwitchInput(currentTime);
             }
 
-            if (useOpenGL)
-                emuInstance->makeCurrentGL();
+            {
+                double t = linkMs();
+                if (useOpenGL)
+                    emuInstance->makeCurrentGL();
+                linkTimes.glCurrent = linkMs() - t;
+            }
 
             // update render settings if needed
             if (videoSettingsDirty)
@@ -531,6 +724,23 @@ void EmuThread::run()
             }
             linkTimes.capture = linkMs() - linkT;
 
+            // melonDS Link: which screens show a new picture; with the setting, an unchanged
+            // frame is not shown again (frame generation then gets no doubles) - at least
+            // every 0.5 s one goes out anyway (messages on the screen, a resized window)
+            bool linkPresent = true;
+            if (emuInstance->instanceID == 0 &&
+                (Link::Pacing::SkipDuplicates() || Link::Get().GetState() == Link::State::Connected))
+            {
+                linkT = linkMs();
+                bool newTop = true, newBottom = true;
+                linkFrameChanged(emuInstance->nds, newTop, newBottom);
+                linkTimes.compare = linkMs() - linkT;
+                linkPresent = !Link::Pacing::SkipDuplicates() || newTop || newBottom ||
+                              linkT - linkLastPresent >= 500;
+                Link::Pacing::Pictures(newTop, newBottom, linkPresent);
+            }
+
+            linkT = linkMs();
             if (emuInstance->ndsSave)
                 emuInstance->ndsSave->CheckFlush();
 
@@ -539,9 +749,14 @@ void EmuThread::run()
 
             if (emuInstance->firmwareSave)
                 emuInstance->firmwareSave->CheckFlush();
+            linkTimes.saves = linkMs() - linkT;
 
             linkT = linkMs();
-            emuInstance->drawScreen();
+            if (linkPresent)
+            {
+                emuInstance->drawScreen();
+                linkLastPresent = linkT;
+            }
             linkTimes.draw = linkMs() - linkT;
 
 #ifdef MELONCAP
@@ -549,7 +764,7 @@ void EmuThread::run()
 #endif // MELONCAP
 
             winUpdateCount++;
-            if (winUpdateCount >= winUpdateFreq && !useOpenGL)
+            if (winUpdateCount >= winUpdateFreq && !useOpenGL && linkPresent)
             {
                 emit windowUpdate();
                 winUpdateCount = 0;
@@ -654,7 +869,7 @@ void EmuThread::run()
             if (emuInstance->instanceID == 0)
             {
                 linkTimes.fast = fastforward || slowmo;
-                linkTimes.total = linkMs() - linkStart;
+                linkTimes.total = linkMs() - linkStart + (linkStart - linkLoopStart) + linkPrevMsgMs;
                 Link::Pacing::Frame(linkTimes);
                 // the settings that matter for the timing (logged when they change)
                 if (linkStart - linkSettingsAt > 2000)
@@ -696,7 +911,9 @@ void EmuThread::run()
             emuInstance->drawScreen();
         }
 
+        double linkMsgStart = linkMs();
         handleMessages();
+        linkPrevMsgMs = linkMs() - linkMsgStart;
     }
 }
 

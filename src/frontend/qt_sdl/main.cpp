@@ -36,6 +36,8 @@
 #include <QVector>
 #include <QCommandLineParser>
 #include <QStandardPaths>
+#include <QDirIterator>
+#include <QFileInfo>
 #ifndef _WIN32
 #include <QGuiApplication>
 #include <QSocketNotifier>
@@ -71,6 +73,12 @@ QString* systemThemeName;
 
 
 QString emuDirectory;
+// melonDS Link: the link's folder (normally emuDirectory/melonDS-Link), where melonDS kept
+// its files before (the folder of the exe, for relative paths in old settings), and what
+// moving to %APPDATA% did (written to the link's log)
+QString linkDirectory;
+QString legacyDirectory;
+QStringList linkMoveNotes;
 
 const int kMaxEmuInstances = 16;
 EmuInstance* emuInstances[kMaxEmuInstances];
@@ -177,6 +185,89 @@ void broadcastInstanceCommand(int cmd, QVariant& param, int sourceinst)
 }
 
 
+// copies a folder with everything in it and checks every file (size and content)
+static bool copyTreeChecked(const QString& from, const QString& to)
+{
+    QDir src(from);
+    QDirIterator it(from, QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    while (it.hasNext())
+    {
+        QString file = it.next();
+        QString rel = src.relativeFilePath(file);
+        QString dst = to + "/" + rel;
+        QDir().mkpath(QFileInfo(dst).absolutePath());
+        QFile::remove(dst);
+        if (!QFile::copy(file, dst)) return false;
+        QFile a(file), b(dst);
+        if (!a.open(QIODevice::ReadOnly) || !b.open(QIODevice::ReadOnly) || a.size() != b.size()) return false;
+        while (!a.atEnd())
+            if (a.read(1 << 20) != b.read(1 << 20)) return false;
+    }
+    return true;
+}
+
+// melonDS Link: melonDS kept its settings and melonDS-Link next to the exe (the "portable"
+// Windows build); they move to %APPDATA%\melonDS once - when there are no settings there yet.
+// Same drive: the folder is just renamed (nothing copied); otherwise copied, every file
+// checked, and the old one kept as melonDS-Link-alt. The old settings stay as *.alt.
+static void linkMoveFromExeFolder(const QString& oldDir, const QString& newDir)
+{
+    linkDirectory = newDir + "/melonDS-Link";
+    if (QFile::exists(newDir + "/melonDS.toml")) return;   // moved already (or a fresh start)
+
+    // settings and small state files
+    static const char* kFiles[] = {"melonDS.toml", "melonDS.ini", "rtc.bin", "wfcsettings.bin"};
+    QDir od(oldDir);
+    for (const QString& name : od.entryList(QDir::Files | QDir::Hidden))
+    {
+        bool take = false;
+        for (const char* f : kFiles) take |= name.startsWith(f) && !name.endsWith(".alt");
+        if (!take) continue;
+        QString from = oldDir + "/" + name, to = newDir + "/" + name;
+        bool ok = QFile::copy(from, to) && QFileInfo(to).size() == QFileInfo(from).size();
+        if (ok) QFile::rename(from, from + ".alt");
+        linkMoveNotes << QString("%1 -> %2: %3").arg(from, to, ok ? "ok" : "failed");
+    }
+
+    // the link's folder (backups, ROM cache, sync, screenshots, log)
+    QString oldLink = oldDir + "/melonDS-Link", newLink = newDir + "/melonDS-Link";
+    if (!QDir(oldLink).exists() || QDir(newLink).exists()) return;
+    // paths into the link's folder in the settings (recent ROMs from the ROM cache...) follow
+    auto fixSettings = [&]
+    {
+        QFile f(newDir + "/melonDS.toml");
+        if (!f.open(QIODevice::ReadOnly)) return;
+        QString text = QString::fromUtf8(f.readAll());
+        f.close();
+        QString before = text;
+        QString o = QDir::toNativeSeparators(oldLink), n = QDir::toNativeSeparators(newLink);
+        text.replace(QDir::fromNativeSeparators(oldLink), QDir::fromNativeSeparators(newLink), Qt::CaseInsensitive);
+        text.replace(QString(o).replace("\\", "\\\\"), QString(n).replace("\\", "\\\\"), Qt::CaseInsensitive);
+        text.replace(o, n, Qt::CaseInsensitive);
+        if (text == before) return;
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) f.write(text.toUtf8());
+        linkMoveNotes << "paths in melonDS.toml now point to " + newLink;
+    };
+    if (QDir().rename(oldLink, newLink))
+    {
+        linkMoveNotes << QString("%1 -> %2: moved").arg(oldLink, newLink);
+        fixSettings();
+        return;
+    }
+    if (copyTreeChecked(oldLink, newLink))
+    {
+        fixSettings();
+        bool kept = QDir().rename(oldLink, oldLink + "-alt");
+        linkMoveNotes << QString("%1 -> %2: copied and checked, the old one %3").arg(oldLink, newLink,
+            kept ? "is now melonDS-Link-alt" : "stays where it was");
+        return;
+    }
+    // could not be moved: keep using the old one (nothing is lost)
+    QDir(newLink).removeRecursively();
+    linkDirectory = oldLink;
+    linkMoveNotes << QString("%1 -> %2: failed, the old folder stays in use").arg(oldLink, newLink);
+}
+
 void pathInit()
 {
     // First, check for the portable directory next to the executable.
@@ -202,7 +293,20 @@ void pathInit()
     {
         // If no overrides are specified, use the default path.
 #if defined(__WIN32__) && defined(WIN32_PORTABLE)
-        emuDirectory = appdirpath;
+        // melonDS Link: like Azahar in %APPDATA% (melonDS\ with melonDS-Link\ in it), no
+        // longer next to the exe. What was there is moved over once (linkMoveFromExeFolder)
+        QString appdata = qEnvironmentVariable("APPDATA");
+        if (appdata.isEmpty())
+        {
+            emuDirectory = appdirpath;
+        }
+        else
+        {
+            emuDirectory = QDir(appdata).absolutePath() + "/melonDS";
+            QDir().mkpath(emuDirectory);
+            legacyDirectory = appdirpath;
+            linkMoveFromExeFolder(appdirpath, emuDirectory);
+        }
 #else
         QString confdir;
         QDir config(QStandardPaths::writableLocation(QStandardPaths::ConfigLocation));
@@ -211,6 +315,7 @@ void pathInit()
         emuDirectory = confdir;
 #endif
     }
+    if (linkDirectory.isEmpty()) linkDirectory = emuDirectory + "/melonDS-Link";
 }
 
 

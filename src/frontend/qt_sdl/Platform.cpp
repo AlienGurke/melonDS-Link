@@ -45,6 +45,8 @@ extern CameraManager* camManager[2];
 
 extern melonDS::Net net;
 
+extern QString legacyDirectory;   // melonDS Link: where melonDS kept its files before (main.cpp)
+
 namespace melonDS::Platform
 {
 
@@ -155,6 +157,11 @@ std::string GetLocalFilePath(const std::string& filename)
     else
     {
         fullpath = emuDirectory + QDir::separator() + qpath;
+        // melonDS Link: settings moved to %APPDATA% may name files relative to where melonDS
+        // was before (next to the exe, e.g. a BIOS): those are still found there
+        if (!legacyDirectory.isEmpty() && !QFile::exists(fullpath) &&
+            QFile::exists(legacyDirectory + QDir::separator() + qpath))
+            fullpath = legacyDirectory + QDir::separator() + qpath;
     }
 
     return fullpath.toStdString();

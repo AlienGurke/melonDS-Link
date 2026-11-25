@@ -79,6 +79,7 @@
 #include "AboutDialog.h"
 #include "LinkClient.h"
 #include "LinkSession.h"
+#include "LinkPacing.h"
 #include "LinkRomDialog.h"
 #include "LinkLang.h"
 #include <QVBoxLayout>
@@ -766,6 +767,20 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                             Config::Save();
                         });
                     }
+                });
+            }
+            // the picture on the PC: frames that did not change are not shown again
+            {
+                Link::Pacing::SetSkipDuplicates(globalCfg.GetBool("Link.SkipDuplicates"));
+                QAction* act = menu->addAction("");
+                act->setCheckable(true);
+                act->setChecked(Link::Pacing::SkipDuplicates());
+                linkTexts.push_back({act, "menu.skipdup"});
+                connect(act, &QAction::toggled, this, [this](bool on)
+                {
+                    Link::Pacing::SetSkipDuplicates(on);
+                    globalCfg.SetBool("Link.SkipDuplicates", on);
+                    Config::Save();
                 });
             }
             // save backups: how many of the newest, and for how many days played the first one
