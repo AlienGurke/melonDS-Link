@@ -72,6 +72,13 @@ using namespace melonDS;
 // between software and OpenGL creates a new one), otherwise their names may
 // point at nothing - or at melonDS' own objects in the new context.
 static GLuint linkCapReadFb = 0, linkCapDrawFb = 0, linkCapRb = 0;
+// the read back goes into pixel buffers and is picked up when the GPU is done (a fence),
+// later in the frame or the next one - glReadPixels straight to memory waited for the GPU
+// (the log: up to 22 ms, a frame too late on the PC)
+static GLuint linkCapPbo[2] = {0, 0};
+static GLsync linkCapFence[2] = {nullptr, nullptr};
+static uint64_t linkCapFrame[2] = {0, 0};
+static int linkCapNext = 0;   // the slot the next read back goes into
 #endif
 
 // melonDS Link: GL objects for spotting unchanged pictures (see linkFrameChanged)
@@ -92,8 +99,13 @@ static void linkCaptureReset(bool contextAlive)
         glDeleteFramebuffers(1, &linkCapReadFb);
         glDeleteFramebuffers(1, &linkCapDrawFb);
         glDeleteRenderbuffers(1, &linkCapRb);
+        glDeleteBuffers(2, linkCapPbo);
+        for (GLsync& f : linkCapFence) if (f) glDeleteSync(f);
     }
     linkCapReadFb = linkCapDrawFb = linkCapRb = 0;
+    linkCapPbo[0] = linkCapPbo[1] = 0;
+    linkCapFence[0] = linkCapFence[1] = nullptr;
+    linkCapNext = 0;
     if (contextAlive && linkCmpProg)
     {
         glDeleteProgram(linkCmpProg);
@@ -269,6 +281,32 @@ void main()
 #endif
 }
 
+// melonDS Link: hand over the read backs the GPU has finished, oldest first. wait: also
+// those still running (both slots busy)
+static void linkCaptureCollect(bool wait)
+{
+#ifdef OGLRENDERER_ENABLED
+    for (int k = 0; k < 2; k++)
+    {
+        int i = (linkCapNext + k) % 2;   // the older one first
+        if (!linkCapFence[i]) continue;
+        GLenum r = glClientWaitSync(linkCapFence[i], wait ? GL_SYNC_FLUSH_COMMANDS_BIT : 0,
+                                    wait ? 50000000ull : 0);
+        if (r == GL_TIMEOUT_EXPIRED) return;   // not yet (and keep the order)
+        glDeleteSync(linkCapFence[i]);
+        linkCapFence[i] = nullptr;
+        if (r == GL_WAIT_FAILED) continue;
+        GLint prevPack = 0;
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prevPack);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, linkCapPbo[i]);
+        const void* px = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 256 * 192 * 4, GL_MAP_READ_BIT);
+        if (px) Link::Get().SubmitBottomScreen((const uint32_t*)px, false, linkCapFrame[i]);
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, prevPack);
+    }
+#endif
+}
+
 // melonDS Link: hand the DS bottom screen (256x192) to the 3DS sender.
 // Software renderer: RAM framebuffer. OpenGL renderer: scale the bottom layer
 // of the output texture down to 256x192 on the GPU and read it back.
@@ -297,7 +335,18 @@ static void linkCaptureBottomScreen(melonDS::NDS* nds, uint64_t emuFrame)
         glBindRenderbuffer(GL_RENDERBUFFER, rb);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 256, 192);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
+        GLint prevPack = 0;
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prevPack);
+        glGenBuffers(2, linkCapPbo);
+        for (GLuint b : linkCapPbo)
+        {
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, b);
+            glBufferData(GL_PIXEL_PACK_BUFFER, 256 * 192 * 4, nullptr, GL_STREAM_READ);
+        }
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, prevPack);
     }
+    // both slots still busy (the GPU is far behind): hand over the older one first
+    if (linkCapFence[linkCapNext]) linkCaptureCollect(true);
 
     GLint prevRead = 0, prevDraw = 0, prevTex = 0;
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
@@ -332,13 +381,24 @@ static void linkCaptureBottomScreen(melonDS::NDS* nds, uint64_t emuFrame)
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, drawFb);
     glReadBuffer(GL_COLOR_ATTACHMENT0);
-    glReadPixels(0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    {
+        // into a pixel buffer: returns at once, the fence says when the GPU is done
+        int i = linkCapNext;
+        GLint prevPack = 0;
+        glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &prevPack);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, linkCapPbo[i]);
+        glReadPixels(0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, prevPack);
+        linkCapFence[i] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        linkCapFrame[i] = emuFrame;
+        linkCapNext = (i + 1) % 2;
+        glFlush();   // so the GPU starts on it now
+    }
+    (void)pixels;
 
     glBindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
-
     // texture row 0 is DS line 0 (same as the software path), so no flip
-    Link::Get().SubmitBottomScreen(pixels.data(), false, emuFrame);
 #endif
 }
 
@@ -758,6 +818,7 @@ void EmuThread::run()
                 linkLastPresent = linkT;
             }
             linkTimes.draw = linkMs() - linkT;
+            if (useOpenGL && emuInstance->instanceID == 0) linkCaptureCollect(false);   // ready by now, usually
 
 #ifdef MELONCAP
             MelonCap::Update();
@@ -844,6 +905,7 @@ void EmuThread::run()
                 lastTime = curtime;
             }
             linkTimes.limiter = linkMs() - linkT;
+            if (useOpenGL && emuInstance->instanceID == 0) linkCaptureCollect(false);
 
             nframes++;
             if (nframes >= 30)
