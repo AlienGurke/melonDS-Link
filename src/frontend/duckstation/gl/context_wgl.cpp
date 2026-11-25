@@ -118,6 +118,11 @@ bool ContextWGL::SwapBuffers()
 
 bool ContextWGL::MakeCurrent()
 {
+  // melonDS Link: melonDS makes the context current every frame (twice); when it already is,
+  // wglMakeCurrent still flushes and waits in the driver - the log showed 90-126 ms stops there
+  if (wglGetCurrentContext() == m_rc && wglGetCurrentDC() == m_dc)
+    return true;
+
   if (!wglMakeCurrent(m_dc, m_rc))
   {
     Log_ErrorPrintf("wglMakeCurrent() failed: 0x%08lX", GetLastError());

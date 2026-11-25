@@ -40,7 +40,7 @@ const Entry kTexts[] = {
     {"menu.pauseonlid", "Pause the game when the 3DS is closed", "Spiel pausieren, wenn der 3DS zugeklappt wird"},
     {"menu.blackout", "Screen black while the 3DS is closed (game paused)", "Bild schwarz, solange der 3DS zugeklappt ist (Spiel pausiert)"},
     {"menu.autoconnect", "Connect automatically when melonDS starts", "Beim Start automatisch verbinden"},
-    {"menu.skipdup", "Skip presenting duplicate frames (for frame generation)", "Doppelte Bilder nicht anzeigen (für Frame Generation)"},
+    {"menu.skipdup", "Skip presenting duplicate frames", "Doppelte Bilder nicht anzeigen"},
     {"menu.video", "Picture on the 3DS", "Bild auf dem 3DS"},
     {"menu.video.tile20", "20 pictures a second for 30 fps games too (uneven, but more often)", "20 Bilder pro Sekunde auch bei 30-fps-Spielen (ungleichmäßig, aber öfter)"},
     {"menu.video.prio", "WiFi priority of the picture (from the next connect):", "WLAN-Priorität des Bildes (ab der nächsten Verbindung):"},
