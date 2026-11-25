@@ -1073,7 +1073,7 @@ void Client::videoWorker()
             lastFrame = frame;
             // how many frames apart the game draws (2 = a 30 fps game)
             int64_t g = (int64_t)(curEmuFrame - tileLastEmu);
-            if (g >= 1 && g <= 6) tileContentGap = 0.9 * tileContentGap + 0.1 * (double)g;
+            if (g >= 1 && g <= 6) tileContentGap = 0.8 * tileContentGap + 0.2 * (double)g;
             tileLastEmu = curEmuFrame;
             tileHeld = true;
             int64_t since = (int64_t)(tileLastEmu - tileSentEmu);
@@ -1136,18 +1136,23 @@ constexpr int kTileDivs[] = {1, 2, 3, 4, 6};
 }
 
 // a rate that fits how the game draws: a 30 fps game gets 30, 15 or 10 (20 is uneven there -
-// every 3rd picture left out - and only with its option)
+// every 3rd picture left out - and only with its option). Changes 4 or more frames apart
+// (a menu with a blinking cursor, a still screen) have no rhythm to keep: every rate fits,
+// each change goes out right away - the test: Pokemon's menus fell to 10-15 a second like
+// that, and an animation starting there (the bag opening) came slowly
 bool Client::tileDivFits(int d) const
 {
     int cg = std::clamp((int)(tileContentGap + 0.5), 1, 6);
+    if (cg >= 4) cg = 1;
     return d % cg == 0 || d == 6 || (d == 3 && optionTile20);
 }
 
-void Client::tileSlower()
+void Client::tileSlower(bool net)
 {
     for (int d : kTileDivs)
         if (d > tileDiv && tileDivFits(d)) { tileDiv = d; break; }
     tileRoomSince = nowMs();
+    if (net) tileNetSlowMs = tileRoomSince;
 }
 
 // tiles the 3DS does not have exactly yet (previews, lost ones)
@@ -1163,7 +1168,22 @@ void Client::tilePace()
     if (!tileDivFits(tileDiv)) { tileSlower(); return; }   // (the 20 fps option was switched off)
     // what the pictures need at this rate vs what the WiFi currently allows
     double need = tileFrameBytes * (60.0 / tileDiv);
-    if (need > 0.9 * budgetBytes) { tileSlower(); return; }
+    if (need > 0.9 * budgetBytes) { tileSlower(true); return; }
+    // slower only because of how the game drew (not the WiFi): back up at once, to the fastest
+    // rate that fits and has room - the animation that just started must not wait seconds
+    if (now - tileNetSlowMs > 3000 && now - queueCutMs > 3000)
+    {
+        for (int d : kTileDivs)
+        {
+            if (d >= tileDiv) break;
+            if (tileDivFits(d) && tileFrameBytes * (60.0 / d) < 0.6 * budgetBytes)
+            {
+                tileDiv = d;
+                tileRoomSince = now;
+                return;
+            }
+        }
+    }
     int faster = 0;
     for (int d : kTileDivs) if (d < tileDiv && tileDivFits(d)) faster = d;
     if (faster == 0) { tileRoomSince = now; return; }
@@ -1540,7 +1560,7 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
     {
         budgetBytes = std::max(kMinRate, std::min(budgetBytes, actual) * 0.5);
         queueCutMs = nowMs();
-        tileSlower();
+        tileSlower(true);
     }
     else if (acksBehind > 150 && nowMs() - queueCutMs > 200)
     {
@@ -1548,7 +1568,7 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
         budgetBytes = std::max(kMinRate, std::min(budgetBytes, actual) * 0.75);
         queueCutMs = nowMs();
         statsQueueCuts++;
-        tileSlower();
+        tileSlower(true);
     }
     const double bytesPerSec = budgetBytes;
     // with the 3DS pacing by time stamps a frame must be out within one picture of a 30 fps

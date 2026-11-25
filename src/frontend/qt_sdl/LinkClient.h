@@ -282,7 +282,7 @@ private:
 
     // steady picture rate (tiles every tileDiv-th DS frame), see tilePace
     bool tileDivFits(int d) const;
-    void tileSlower();
+    void tileSlower(bool net = false);
     bool tilesPending() const;
     void tilePace();
     void packTilePackets(std::vector<std::vector<uint8_t>>& packets,
@@ -293,6 +293,7 @@ private:
     uint64_t curEmuFrame = 0, tileLastEmu = 0, tileSentEmu = 0, tileSendEmu = 0, prevChangedEmu = 0;
     double tileFrameBytes = 0;              // bytes per picture lately
     int64_t tileRoomSince = 0;
+    int64_t tileNetSlowMs = 0;              // last slowed down because the WiFi did not keep up
     uint32_t tileSameCount = 0;
     uint32_t tileLastMade = 0;
     double lz4Ratio = 0.65;
