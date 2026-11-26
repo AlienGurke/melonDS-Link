@@ -303,6 +303,7 @@ private:
     bool h264LossSinceKey = true;             // a packet got lost since the last key frame
     bool h264SecondKey = false;               // one more key frame right after the first
     int h264Bitrate = 8'000'000;
+    double h264Pace = 3.0e6;                  // bytes a second a frame goes out at
     int h264Silent = 0;                       // statistics in a row in which the 3DS showed nothing
     std::vector<uint16_t> h264Last;
     std::vector<uint8_t> h264Yuv, h264Out;

@@ -1949,8 +1949,8 @@ void toRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv)
 void Client::sendH264(const std::vector<uint16_t>& frame)
 {
     // spread out a bit (the 3DS WiFi does not like bursts), but quick enough that a frame
-    // with its parity is there within ~15 ms
-    constexpr double kPaceBytesPerSec = 2.0e6;
+    // with its parity is there soon: 3 MB/s, 2 MB/s while many packets get lost (h264Pace)
+    const double kPaceBytesPerSec = h264Pace;
     if (frame.size() != (size_t)(kWidth * kHeight)) return;
     const auto sendT0 = std::chrono::steady_clock::now();
     if (videoResync.exchange(false) || !h264.IsOpen())
@@ -1980,6 +1980,7 @@ void Client::sendH264(const std::vector<uint16_t>& frame)
     {
         h264Bitrate = std::max(2'000'000, (int)(h264Bitrate * 0.7));
         h264.SetBitrate(h264Bitrate);
+        h264Pace = 2.0e6;
     }
     // the data rate follows the WiFi: only heavy loss lowers it (losses come at 20 KB/s too)
     if (statReceived + statLost >= 60)
@@ -1994,6 +1995,9 @@ void Client::sendH264(const std::vector<uint16_t>& frame)
             h264Bitrate = rate;
             h264.SetBitrate(rate);
         }
+        // sending speed: slower while many get lost, back up slowly
+        if (loss > 0.08) h264Pace = 2.0e6;
+        else if (loss < 0.03) h264Pace = std::min(3.0e6, h264Pace + 0.25e6);
         statReceived = statLost = 0;
     }
 
@@ -2157,10 +2161,10 @@ void Client::videoStats(int64_t now)
                      (long long)std::min(ackMinPrev, ackMinCur), (long long)statsQueueCuts));
         if (h264Capable)
             log(strf("video: H.264 %.1f frames/s, %.1f KB per frame, %.0f KB/s, %.1f %% lost, %llu key frames "
-                     "(%llu asked for by the 3DS), target %d kbit/s, sending took %.1f ms on average (%.1f at "
+                     "(%llu asked for by the 3DS), target %d kbit/s, sent at %.2f MB/s, sending took %.1f ms on average (%.1f at "
                      "most, of it %.1f encoding)",
                      statsFrames / secs, statsBytes / 1024.0 / statsFrames, statsBytes / 1024.0 / secs, loss,
-                     (unsigned long long)statsKeys, (unsigned long long)statsKeyAsks, h264Bitrate / 1000,
+                     (unsigned long long)statsKeys, (unsigned long long)statsKeyAsks, h264Bitrate / 1000, h264Pace / 1e6,
                      statsSendMs / statsFrames, statsSendMaxMs, statsEncodeMs / statsFrames));
         else
         log(strf("video: tiles %.1f frames/s, %.1f KB per frame, %.0f KB/s, %.1f %% lost, rate %.0f KB/s",
