@@ -58,6 +58,9 @@ public:
 
     // append a line to melonDS-Link/Debug/link-log.txt (with date and time)
     static void Log(const std::string& line);
+    // the log can be switched off (Debug menu); on by default
+    static void SetLogging(bool on);
+    static bool Logging();
 
     // keep the newest `keep` backups of a game (also used by tests)
     static void WriteBackup(const std::string& gameName, const uint8_t* data, uint32_t len, int extra = 0);

@@ -943,6 +943,21 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
 
             QMenu* debugMenu = menu->addMenu("");
             linkMenus.push_back({debugMenu, "menu.debug"});
+            {
+                // the log (and the measurements for it): on by default
+                Link::Session::SetLogging(globalCfg.GetBool("Link.Log"));
+                QAction* act = debugMenu->addAction("");
+                linkTexts.push_back({act, "menu.log"});
+                act->setCheckable(true);
+                act->setChecked(Link::Session::Logging());
+                connect(act, &QAction::toggled, this, [this](bool on)
+                {
+                    Link::Session::SetLogging(on);
+                    globalCfg.SetBool("Link.Log", on);
+                    Config::Save();
+                });
+                debugMenu->addSeparator();
+            }
             QAction* actLinkSpeed = debugMenu->addAction("");
             linkTexts.push_back({actLinkSpeed, "menu.speedtest"});
             connect(actLinkSpeed, &QAction::triggered, this, [this]

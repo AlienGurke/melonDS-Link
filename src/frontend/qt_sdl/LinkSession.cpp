@@ -167,8 +167,19 @@ std::string Session::BackupDir(const std::string& gameName)
 
 // Log lines go to a writer thread: writing a file in the picture's or the emulation's thread
 // can hold them up (in Azahar-Link that was a hitch every 10 s).
+static std::atomic<bool> g_logging { true };
+bool Session::Logging() { return g_logging.load(std::memory_order_relaxed); }
+void Session::SetLogging(bool on)
+{
+    if (on == g_logging.load()) return;
+    if (!on) Log("log: switched off");
+    g_logging = on;
+    if (on) Log("log: switched on");
+}
+
 void Session::Log(const std::string& line)
 {
+    if (!Logging()) return;
     struct Writer
     {
         std::mutex m;

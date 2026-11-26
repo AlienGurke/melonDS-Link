@@ -3,6 +3,7 @@
 */
 
 #include "LinkPacing.h"
+#include "LinkSession.h"
 
 #include <QTime>
 #include <algorithm>
@@ -80,6 +81,7 @@ std::atomic<bool> g_skipDuplicates { false };
 
 void Frame(const FrameTimes& t)
 {
+    if (!Session::Logging()) return;   // the measurements only go into the log
     const double now = nowMs();
     std::lock_guard<std::mutex> lock(g_mutex);
     Stats& s = g_s;

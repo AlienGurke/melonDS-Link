@@ -89,6 +89,7 @@ const Entry kTexts[] = {
     {"stop.done", "3DS Link: game ended from the 3DS", "3DS Link: Spiel vom 3DS aus beendet"},
     {"menu.speedtest", "Test and tune WiFi speed...", "WLAN-Geschwindigkeit testen und optimieren..."},
     {"menu.sdtest", "Test the 3DS SD card...", "SD-Karte des 3DS testen..."},
+    {"menu.log", "Write log", "Log schreiben"},
     {"menu.debugfolder", "Open debug folder (log)", "Debug-Ordner öffnen (Log)"},
     {"menu.screenshots", "Open screenshot folder", "Screenshot-Ordner öffnen"},
 
