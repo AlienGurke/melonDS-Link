@@ -13,6 +13,7 @@ set(SOURCES_QT_SDL
     LinkClient.cpp
     LinkSession.cpp
     LinkPacing.cpp
+    LinkH264.cpp
     LinkRomDialog.cpp
     LinkLang.cpp
     lz4/lz4.c
@@ -293,4 +294,17 @@ if (ENABLE_OGLRENDERER)
     target_compile_definitions(melonDS PUBLIC OGLRENDERER_ENABLED)
     target_compile_definitions(melonDS PUBLIC MELONDS_GL_HEADER=${MELONDS_GL_HEADER})
     target_compile_definitions(core PUBLIC MELONDS_GL_HEADER=${MELONDS_GL_HEADER})
+endif()
+
+# melonDS Link: the bottom screen as H.264 for the New 3DS (its hardware decoder), if
+# OpenH264 is there (Windows: from vcpkg); without it the picture goes as tiles
+find_path(OPENH264_INCLUDE_DIR wels/codec_api.h)
+find_library(OPENH264_LIBRARY NAMES openh264)
+if (OPENH264_INCLUDE_DIR AND OPENH264_LIBRARY)
+    message(STATUS "melonDS Link: H.264 with ${OPENH264_LIBRARY}")
+    target_include_directories(melonDS PRIVATE ${OPENH264_INCLUDE_DIR})
+    target_link_libraries(melonDS PRIVATE ${OPENH264_LIBRARY})
+    target_compile_definitions(melonDS PRIVATE LINK_HAVE_OPENH264)
+else()
+    message(STATUS "melonDS Link: no OpenH264 - the bottom screen goes as tiles only")
 endif()

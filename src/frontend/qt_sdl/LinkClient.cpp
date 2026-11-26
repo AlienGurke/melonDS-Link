@@ -809,6 +809,11 @@ void Client::worker(std::string host)
             tileLz4 = (c & LINK_VIDCAP_TILE_LZ4) != 0;
             tileLz4x = (c & LINK_VIDCAP_TILE_LZ4X) != 0;
             echoOk = (c & LINK_VIDCAP_ECHO) != 0;
+            h264Supported = H264Encoder::Available() && (c & LINK_VIDCAP_H264) != 0;
+            h264Rs = h264Supported && (c & LINK_VIDCAP_H264_RS) != 0;
+            h264Failed = false;
+            h264Capable = h264Supported && optionH264;
+            h264Silent = 0;
             linkGfInit();
             if (haveCaps && caps.size() >= 8)
             {
@@ -819,6 +824,10 @@ void Client::worker(std::string host)
             }
             log(strf("video: tiles%s%s%s%s", tileRs ? ", parity" : "", tileTs ? ", time stamps" : "",
                      tileLz4 ? (tileLz4x ? ", LZ4 (MDFX)" : ", LZ4") : "", echoOk ? ", echo" : ""));
+            log(h264Capable ? "video: H.264 (New 3DS hardware decoder)"
+                : h264Supported ? "video: H.264 possible, switched off"
+                : !H264Encoder::Available() ? "video: no H.264 in this build"
+                : "video: the 3DS has no H.264 decoder (not a New 3DS)");
             videoResync = true;
             haveVideoAddr = true;
         }
@@ -921,7 +930,11 @@ void Client::inputLoop(intptr_t sock, std::atomic<bool>* run)
             if (nowIdle != idle.load())
             {
                 idle = nowIdle;
-                if (!nowIdle) videoResync = true;   // the 3DS shows our picture again: all of it
+                if (!nowIdle)
+                {
+                    videoResync = true;   // the 3DS shows our picture again: all of it
+                    h264ForceKey = true;
+                }
                 log(nowIdle ? "3DS: Azahar is the active emulator - melonDS waits"
                             : "3DS: melonDS is the active emulator again");
             }
@@ -977,6 +990,7 @@ void Client::inputLoop(intptr_t sock, std::atomic<bool>* run)
                 intptr_t es = echoSock != -1 ? echoSock : udpSock;
                 if (es != -1) sendto((sock_t)es, (const char*)echo, sizeof(echo), 0, (sockaddr*)&to, sizeof(to));
             }
+            if ((pkt.flags & LINK_INPUT_NEEDKEY) && !nowIdle) h264KeyWanted = true;
             if (pkt.flags & LINK_INPUT_VIDEOACK)
             {
                 std::lock_guard<std::mutex> vlock(videoMutex);
@@ -1070,10 +1084,45 @@ void Client::videoWorker()
         processAcks();
 
         // the buttons: a gap of more than 100 ms makes the picture smaller at once
+        // (tiles: less data per second; H.264: lower bit rate)
         if (inputGaps != inputGapsSeen)
         {
             inputGapsSeen = inputGaps;
             inputSqueeze = true;
+            if (h264Capable && h264.IsOpen())
+            {
+                h264Bitrate = std::max(2'000'000, (int)(h264Bitrate * 0.8));
+                h264.SetBitrate(h264Bitrate);
+            }
+        }
+
+        // the option switched while connected: from the next picture on
+        const bool wantH264 = h264Supported && optionH264 && !h264Failed;
+        if (wantH264 != h264Capable)
+        {
+            h264Capable = wantH264;
+            videoResync = true;
+            if (wantH264) h264ForceKey = true;   // the picture on the screen at once
+            else tileLevel.assign(kTiles, 255);
+            log(wantH264 ? "video: switched to H.264" : "video: switched to tiles");
+        }
+        if (h264Capable)
+        {
+            // the 3DS lost a frame it could not rebuild: a key frame at once. It keeps asking
+            // until one arrived, so not again before the last one could have arrived
+            if (h264KeyWanted.exchange(false) && nowMs() - h264KeyMs >= 70 && !h264ForceKey)
+            {
+                h264ForceKey = true;
+                statsKeyAsks++;
+            }
+            if (gotFrame)
+            {
+                lastFrame = frame;
+                sendH264(frame);
+            }
+            else if (!lastFrame.empty() && h264ForceKey)
+                sendH264(lastFrame);   // a packet got lost while nothing moves: repair it
+            continue;
         }
 
         // melonDS hands over every frame (60 a second) even if the game drew nothing new: an
@@ -1238,7 +1287,7 @@ void Client::processAcks()
             if (d >= 0)
             {
                 received = (d < 64 && ((aMask >> d) & 1)) || ackedRing[p.seq & (kAckRing - 1)] == p.seq;
-                if (p.fec)
+                if (p.fec || p.h264)
                     // the 3DS may still rebuild it from the parity at the end of its frame:
                     // only lost once packets after the whole frame were confirmed
                     lost = !received && (int32_t)(aSeq - p.frameEnd) >= 2;
@@ -1248,11 +1297,15 @@ void Client::processAcks()
         }
         // no receipt in time (e.g. it was the last packet before a pause). With parity 600 ms:
         // a queue in the WiFi is no loss, and counting it as one sends everything again
-        if (!received && now - p.sentMs > (p.fec ? 600 : 150)) lost = true;
+        // H.264 waits longer as well: a wrong "lost" costs a key frame there
+        if (!received && now - p.sentMs > (p.h264 ? 400 : p.fec ? 600 : 150)) lost = true;
         if (!received && !lost) break;
         if (lost)
         {
             for (uint16_t t : p.tiles) tileLevel[t] = 255;
+            // the 3DS could not repair it: it waits for a key frame
+            if (p.h264 && !p.parity) h264ForceKey = true;
+            if (p.h264) h264LossSinceKey = true;
             statLost++;
             statsLost++;
             watchLost++;
@@ -1279,6 +1332,7 @@ void Client::processAcks()
             {
                 log(strf("video: receipts ahead of what was sent (%u vs %u) - starting over", aSeq, videoSeq - 1));
                 videoResync = true;
+                h264ForceKey = true;
             }
             else
             {
@@ -1825,6 +1879,238 @@ void Client::sendTiles(const std::vector<uint16_t>& frame)
     statsBytes += sentBytes;
 }
 
+namespace
+{
+
+// R, G, B -> Y, U, V for the encoder: BT.601 TV range, what the 3DS decoder expects (measured
+// in Azahar-Link: full range came out ~16 % brighter). Row i: R, G, B and the constant
+constexpr float kYuv[3][4] = {{0.256788f, 0.504129f, 0.097906f, 16.0f},
+                              {-0.148223f, -0.290993f, 0.439216f, 128.0f},
+                              {0.439216f, -0.367788f, -0.071427f, 128.0f}};
+
+// The DS picture in the middle of the 3DS bottom screen (320x240, black around it), turned
+// for the 3DS framebuffer (coded column c, row r = screen x r, y 239 - c), as I420.
+// The DS picture starts at an even x and y, so no 2x2 colour block mixes it with the black.
+void toRotatedI420(const std::vector<uint16_t>& src, std::vector<uint8_t>& yuv)
+{
+    constexpr int W = LINK_H264_WIDTH, H = LINK_H264_HEIGHT;
+    constexpr int ox = LINK_DS_OFFSET_X, oy = LINK_DS_OFFSET_Y;
+    yuv.resize(W * H * 3 / 2);
+    uint8_t* Y = yuv.data();
+    uint8_t* U = Y + W * H;
+    uint8_t* V = U + (W / 2) * (H / 2);
+    int k[3][4];
+    for (int i = 0; i < 3; i++)
+    {
+        for (int j = 0; j < 3; j++)
+            k[i][j] = (int)(kYuv[i][j] * 65536.0f + (kYuv[i][j] < 0 ? -0.5f : 0.5f));
+        k[i][3] = (int)(kYuv[i][3] * 65536.0f) + 32768;
+    }
+    auto clamp8 = [](int v) { return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v); };
+    const uint8_t blackY = clamp8(k[0][3] >> 16);
+    const uint8_t blackU = clamp8(k[1][3] >> 16), blackV = clamp8(k[2][3] >> 16);
+    for (int r = 0; r < H; r += 2)        // r = screen x
+    {
+        const int dx = r - ox;
+        const bool inX = dx >= 0 && dx + 1 < kWidth;
+        for (int c = 0; c < W; c += 2)    // c = 239 - screen y
+        {
+            const int dy = (239 - c) - oy;   // the lower of the two rows is dy - 1
+            if (!inX || dy - 1 < 0 || dy >= kHeight)
+            {
+                Y[r * W + c] = Y[r * W + c + 1] = Y[(r + 1) * W + c] = Y[(r + 1) * W + c + 1] = blackY;
+                U[(r / 2) * (W / 2) + c / 2] = blackU;
+                V[(r / 2) * (W / 2) + c / 2] = blackV;
+                continue;
+            }
+            int sr = 0, sg = 0, sb = 0;
+            for (int ry = 0; ry < 2; ry++)
+                for (int cx = 0; cx < 2; cx++)
+                {
+                    const uint16_t p = src[(dy - cx) * kWidth + dx + ry];
+                    const int R = ((p >> 11) & 31) * 255 / 31;
+                    const int G = ((p >> 5) & 63) * 255 / 63;
+                    const int B = (p & 31) * 255 / 31;
+                    Y[(r + ry) * W + c + cx] = clamp8((k[0][0] * R + k[0][1] * G + k[0][2] * B + k[0][3]) >> 16);
+                    sr += R; sg += G; sb += B;
+                }
+            U[(r / 2) * (W / 2) + c / 2] = clamp8(((k[1][0] * sr + k[1][1] * sg + k[1][2] * sb) / 4 + k[1][3]) >> 16);
+            V[(r / 2) * (W / 2) + c / 2] = clamp8(((k[2][0] * sr + k[2][1] * sg + k[2][2] * sb) / 4 + k[2][3]) >> 16);
+        }
+    }
+}
+
+}
+
+// New 3DS: the bottom screen as H.264 (as in Azahar-Link). Unchanged pictures are not sent;
+// a lost packet makes the next frame a key frame (the 3DS shows nothing broken meanwhile).
+void Client::sendH264(const std::vector<uint16_t>& frame)
+{
+    // spread out a bit (the 3DS WiFi does not like bursts), but quick enough that a frame
+    // with its parity is there within ~15 ms
+    constexpr double kPaceBytesPerSec = 2.0e6;
+    if (frame.size() != (size_t)(kWidth * kHeight)) return;
+    const auto sendT0 = std::chrono::steady_clock::now();
+    if (videoResync.exchange(false) || !h264.IsOpen())
+    {
+        if (!h264.IsOpen() && !h264.Open(LINK_H264_WIDTH, LINK_H264_HEIGHT, 60, h264Bitrate))
+        {
+            log("video: the H.264 encoder did not start - tiles instead");
+            h264Failed = true;
+            h264Capable = false;
+            videoResync = true;
+            return;
+        }
+        inFlight.clear();
+        {
+            std::lock_guard<std::mutex> lock(videoMutex);
+            ackValid = ackNew = false;
+        }
+        if (videoSeq == 0) videoSeq = (uint32_t)(nowMs() * 4);
+        h264Last.clear();
+        h264ForceKey = true;
+        h264SecondKey = true;   // the 3DS decoder needs two (see below)
+        statReceived = statLost = 0;
+    }
+
+    // a queue in the WiFi: lower at once
+    if (queueSqueeze.exchange(false))
+    {
+        h264Bitrate = std::max(2'000'000, (int)(h264Bitrate * 0.7));
+        h264.SetBitrate(h264Bitrate);
+    }
+    // the data rate follows the WiFi: only heavy loss lowers it (losses come at 20 KB/s too)
+    if (statReceived + statLost >= 60)
+    {
+        double loss = (double)statLost / (statReceived + statLost);
+        int rate = h264Bitrate;
+        if (loss > 0.08) rate = (int)(rate * 0.8);
+        else if (loss < 0.04) rate += 250'000;
+        rate = std::clamp(rate, 2'000'000, 8'000'000);
+        if (rate != h264Bitrate)
+        {
+            h264Bitrate = rate;
+            h264.SetBitrate(rate);
+        }
+        statReceived = statLost = 0;
+    }
+
+    bool force = h264ForceKey.exchange(false);
+    const int64_t now = nowMs();
+    if (!force && frame == h264Last)
+    {
+        // nothing new. Once it stood still for a quarter second, one key frame if something
+        // got lost since the last one: the 3DS then shows exactly this picture
+        if (h264Settled || !h264LossSinceKey || now - h264ChangedMs < 250) return;
+        force = true;
+    }
+    if (frame != h264Last)
+    {
+        h264ChangedMs = now;
+        h264Settled = false;
+    }
+    if (force) h264Settled = true;
+    h264Last = frame;
+    const auto encodeT0 = std::chrono::steady_clock::now();
+    toRotatedI420(frame, h264Yuv);
+    bool key = false;
+    if (!h264.Encode(h264Yuv.data(), force, nowMs(), h264Out, key) || h264Out.empty())
+    {
+        if (force) h264ForceKey = true;   // try again with the next picture
+        return;
+    }
+    const auto encodeT1 = std::chrono::steady_clock::now();
+    statsEncodeMs += std::chrono::duration<double, std::milli>(encodeT1 - encodeT0).count();
+
+    sockaddr_in to;
+    memcpy(&to, videoAddr, sizeof(to));
+    const uint32_t frameId = ++videoFrameId;
+    const size_t parts = (h264Out.size() + LINK_H264_PART - 1) / LINK_H264_PART;
+    if (parts > 160)
+    {
+        h264ForceKey = true;   // too big for the 3DS buffer: should never happen
+        return;
+    }
+    // Reed-Solomon parity: any `groups` lost packets of the frame can be rebuilt on the 3DS.
+    // About half extra (small frames: as many as data packets); key frames up to 15
+    const size_t maxGroups = key ? LINK_H264_MAX_PARITY : 12;
+    const size_t groups = !h264Rs ? 0
+        : parts <= 2 ? std::min<size_t>(maxGroups, std::max<size_t>(2, parts))
+        : std::min<size_t>(maxGroups, std::max<size_t>(2, (parts + 1) / 2));
+    // when the picture was made: the 3DS shows them as evenly paced as they were made
+    uint32_t made = madeMs(curEmuFrame);
+    if (made == 0) made = 1;
+    const size_t lastLen = h264Out.size() - (parts - 1) * LINK_H264_PART;
+    std::vector<uint8_t> parity(groups * LINK_H264_PART, 0);
+    for (size_t j = 0; j < groups; j++)
+    {
+        uint8_t* par = &parity[j * LINK_H264_PART];
+        for (size_t i = 0; i < parts; i++)
+        {
+            uint8_t tab[256];
+            const uint8_t c = linkCauchy((int)j, (int)i, (int)groups);
+            for (int x = 0; x < 256; x++) tab[x] = linkGfMul(c, (uint8_t)x);
+            const size_t off = i * LINK_H264_PART;
+            const size_t len = std::min<size_t>(LINK_H264_PART, h264Out.size() - off);
+            for (size_t b = 0; b < len; b++) par[b] ^= tab[h264Out[off + b]];
+        }
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    size_t sentBytes = 0;
+    std::vector<uint8_t> pk;
+    for (size_t i = 0; i < parts + groups; i++)
+    {
+        const bool isParity = i >= parts;
+        const size_t off = i * LINK_H264_PART;
+        const size_t len = isParity ? LINK_H264_PART : std::min<size_t>(LINK_H264_PART, h264Out.size() - off);
+        LinkFramePacket hdr = {};
+        hdr.magic = LINK_H264_MAGIC;
+        hdr.frameId = frameId;
+        hdr.seq = videoSeq++;
+        hdr.baseSeq = isParity ? (uint32_t)(LINK_H264_PARITY | (parts << 8) | (groups << 4) | (i - parts)) : made;
+        hdr.entryCount = (uint16_t)(isParity ? lastLen : len);
+        hdr.flags = (uint16_t)((i << LINK_FRAME_INDEX_SHIFT) | (i + 1 == parts ? LINK_FRAME_LAST : 0) |
+                               (key ? LINK_FRAME_KEY : 0));
+        pk.resize(sizeof(hdr) + len);
+        memcpy(pk.data(), &hdr, sizeof(hdr));
+        memcpy(pk.data() + sizeof(hdr), isParity ? &parity[(i - parts) * LINK_H264_PART] : &h264Out[off], len);
+        {
+            std::lock_guard<std::mutex> lock(udpMutex);   // keeps udpSock alive
+            if (udpSock == -1) return;
+            sendto((sock_t)udpSock, (const char*)pk.data(), (int)pk.size(), 0, (sockaddr*)&to, sizeof(to));
+        }
+        SentPacket sp;
+        sp.seq = hdr.seq;
+        sp.sentMs = nowMs();
+        sp.h264 = true;
+        sp.parity = isParity;
+        sp.frameEnd = hdr.seq + (uint32_t)(parts + groups - 1 - i);
+        inFlight.push_back(std::move(sp));
+        sentBytes += pk.size();
+        auto due = t0 + std::chrono::microseconds((long long)(sentBytes * 1e6 / kPaceBytesPerSec));
+        while (std::chrono::steady_clock::now() < due && !stopRequested)
+            std::this_thread::yield();
+    }
+    double tookMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sendT0).count();
+    statsSendMs += tookMs;
+    statsSendMaxMs = std::max(statsSendMaxMs, tookMs);
+    statsFrames++;
+    statsBytes += sentBytes;
+    if (key)
+    {
+        statsKeys++;
+        h264KeyMs = nowMs();
+        h264LossSinceKey = false;
+        // the 3DS hardware decoder shows everything grey (and later frames broken) if its
+        // first key frame is all it got: right after the first one, a second
+        if (h264SecondKey)
+        {
+            h264SecondKey = false;
+            h264ForceKey = true;
+        }
+    }
+}
+
 // The 3DS's statistics (LINK_CMD_VIDEOSTATS) without waiting: the request goes out in the
 // background, its answer is used the next time (10 s later).
 bool Client::statsReply(std::vector<uint8_t>& out)
@@ -1867,10 +2153,18 @@ void Client::videoStats(int64_t now)
                      "data cut %lld times for a queue",
                      (double)statsAckDelaySum / statsAckDelayN, (long long)statsAckDelayMax,
                      (long long)std::min(ackMinPrev, ackMinCur), (long long)statsQueueCuts));
+        if (h264Capable)
+            log(strf("video: H.264 %.1f frames/s, %.1f KB per frame, %.0f KB/s, %.1f %% lost, %llu key frames "
+                     "(%llu asked for by the 3DS), target %d kbit/s, sending took %.1f ms on average (%.1f at "
+                     "most, of it %.1f encoding)",
+                     statsFrames / secs, statsBytes / 1024.0 / statsFrames, statsBytes / 1024.0 / secs, loss,
+                     (unsigned long long)statsKeys, (unsigned long long)statsKeyAsks, h264Bitrate / 1000,
+                     statsSendMs / statsFrames, statsSendMaxMs, statsEncodeMs / statsFrames));
+        else
         log(strf("video: tiles %.1f frames/s, %.1f KB per frame, %.0f KB/s, %.1f %% lost, rate %.0f KB/s",
                  statsFrames / secs, statsBytes / 1024.0 / statsFrames, statsBytes / 1024.0 / secs, loss,
                  budgetBytes / 1024));
-        if (statsCmpRaw > 0 && tileLz4)
+        if (statsCmpRaw > 0 && tileLz4 && !h264Capable)
             log(strf("video: tiles packed with LZ4 to %.0f %% of their size (%zu KB instead of %zu KB)",
                      100.0 * statsCmpLz4 / statsCmpRaw, statsCmpLz4 / 1024, statsCmpRaw / 1024));
     }
@@ -1904,6 +2198,40 @@ void Client::videoStats(int64_t now)
             if (w[0] || w[1])
                 log(strf("video: 3DS dropped %u outdated tile packets, %u because it was behind", w[0], w[1]));
         }
+        if (h264Capable)
+        {
+            // H.264: what the decoder did (the first words of the answer)
+            std::string extra;
+            if (out.size() >= 36)
+            {
+                uint32_t f[3];
+                memcpy(f, out.data() + 24, sizeof(f));
+                extra = f[0] ? strf(", freezes %u (together %u ms, longest %u ms)", f[0], f[1], f[2]) : ", no freezes";
+            }
+            if (out.size() >= 52)
+            {
+                uint32_t g[4];
+                memcpy(g, out.data() + 36, sizeof(g));
+                extra += strf(", shown despite a loss %u, shown late %u, uneven %u, waited %u ms on average",
+                              g[0], g[1], g[2], g[3]);
+            }
+            log(strf("video: 3DS shown %u, dropped (waiting for a key frame) %u, rebuilt packets %u, decoder "
+                     "errors %u%s, made 1/2/3/4-6 frames apart in melonDS %u/%u/%u/%u",
+                     v[0], v[1], v[2], v[3], extra.c_str(),
+                     statsSrcGaps[0], statsSrcGaps[1], statsSrcGaps[2], statsSrcGaps[3]));
+            // pictures went out, but the 3DS showed none: twice in a row, and tiles again
+            if (v[0] == 0 && statsFrames >= 5)
+            {
+                if (++h264Silent >= 2)
+                {
+                    log("video: the 3DS shows no H.264 picture - tiles instead");
+                    h264Failed = true;
+                }
+            }
+            else h264Silent = 0;
+        }
+        else
+        {
         int pending = (int)std::count_if(tileLevel.begin(), tileLevel.end(), [](uint8_t l) { return l != 0; });
         log(strf("video: 3DS shown %u (by the safety net %u), rebuilt packets %u, shown late %u, uneven %u, "
                  "waited %u ms on average, stood 1/2/3/4+ refreshes %u/%u/%u/%u, 3DS loop too slow %u, "
@@ -1914,12 +2242,14 @@ void Client::videoStats(int64_t now)
                  statsSrcGaps[0], statsSrcGaps[1], statsSrcGaps[2], statsSrcGaps[3], framesOverwritten.exchange(0),
                  statsFrames ? statsSendMs / statsFrames : 0.0, statsSendMaxMs,
                  statsFrames ? statsEncodeMs / statsFrames : 0.0, 60 / tileDiv, pending));
+        }
     }
     statsSince = now;
     std::fill(std::begin(statsSrcGaps), std::end(statsSrcGaps), 0u);
     statsSendMs = statsSendMaxMs = statsEncodeMs = 0;
     statsCmpRaw = statsCmpLz4 = 0;
     statsFrames = statsBytes = statsReceived = statsLost = 0;
+    statsKeys = statsKeyAsks = 0;
 }
 
 Client& Get()

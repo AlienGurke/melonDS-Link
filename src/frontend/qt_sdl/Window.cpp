@@ -734,12 +734,24 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             // the picture on the 3DS: 20 a second for 30 fps games too, the WiFi priority class
             {
                 Link::Get().optionTile20 = globalCfg.GetBool("Link.Tile20");
+                Link::Get().optionH264 = globalCfg.GetBool("Link.H264");
                 Link::Get().wifiPrio = std::clamp(globalCfg.GetInt("Link.WifiPrio"), 0, 2);
                 QMenu* videoMenu = menu->addMenu("");
                 linkMenus.push_back({videoMenu, "menu.video"});
                 connect(videoMenu, &QMenu::aboutToShow, this, [this, videoMenu]
                 {
                     videoMenu->clear();
+                    // H.264 (New 3DS): only if this build has the encoder
+                    QAction* h264 = videoMenu->addAction(Link::Tr("menu.video.h264"));
+                    h264->setCheckable(true);
+                    h264->setChecked(Link::Get().optionH264);
+                    h264->setEnabled(Link::Client::H264Available());
+                    connect(h264, &QAction::toggled, this, [this](bool on)
+                    {
+                        Link::Get().optionH264 = on;
+                        globalCfg.SetBool("Link.H264", on);
+                        Config::Save();
+                    });
                     QAction* t20 = videoMenu->addAction(Link::Tr("menu.video.tile20"));
                     t20->setCheckable(true);
                     t20->setChecked(Link::Get().optionTile20);

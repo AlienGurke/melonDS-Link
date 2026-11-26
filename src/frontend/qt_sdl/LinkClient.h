@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "LinkProto.h"
+#include "LinkH264.h"
 
 namespace Link
 {
@@ -94,6 +95,9 @@ public:
     // settings (3DS Link menu)
     std::atomic<bool> optionTile20 { false };   // 20 pictures a second for 30 fps games too
     std::atomic<int> wifiPrio { 0 };            // the picture's WiFi class: 0 video, 1 background, 2 normal
+    std::atomic<bool> optionH264 { true };      // bottom screen as H.264 on a New 3DS
+    // this build can send H.264 (OpenH264 is in it)
+    static bool H264Available() { return H264Encoder::Available(); }
     bool WantsVideo() const { return state.load() == State::Connected && videoWanted.load() && !lidClosed.load() && !idle.load(); }
 
     // messages for the on-screen display (connected, lost, ...)
@@ -188,6 +192,7 @@ private:
     void closeSockets();
     void videoWorker();
     void sendTiles(const std::vector<uint16_t>& frame);
+    void sendH264(const std::vector<uint16_t>& frame);
     void inputLoop(intptr_t sock, std::atomic<bool>* run);
     static std::string markQos(intptr_t sock, const void* toSockaddrIn, bool voice, bool background);
 
@@ -252,6 +257,8 @@ private:
         int64_t sentMs;
         std::vector<uint16_t> tiles;
         bool fec = false;       // parity after the frame: may still be rebuilt on the 3DS
+        bool h264 = false;      // an H.264 packet (a loss costs a key frame)
+        bool parity = false;    // an H.264 parity packet
         uint32_t frameEnd = 0;  // seq of the frame's last packet
     };
     std::deque<SentPacket> inFlight;        // sent, not yet confirmed by the 3DS
@@ -280,6 +287,26 @@ private:
     bool tileLz4 = false, tileLz4x = false; // LZ4 packed packets (x: with the packed size)
     std::atomic<bool> echoOk { false };     // it measures the input round trip
     std::atomic<uint32_t> emuClockOff { 0 };// our clock - the newest picture's time stamp
+
+    // H.264 (New 3DS: hardware decoder), as in Azahar-Link: the DS picture in the middle
+    // of the 3DS bottom screen (320x240), the rest black
+    H264Encoder h264;
+    std::atomic<bool> h264Capable { false };  // the picture goes as H.264 now
+    std::atomic<bool> h264Supported { false };// the 3DS decodes H.264, we can encode it
+    std::atomic<bool> h264Failed { false };   // it did not work this connection: tiles
+    std::atomic<bool> h264ForceKey { false };
+    std::atomic<bool> h264KeyWanted { false };// the 3DS asks for a key frame (input packets)
+    bool h264Rs = false;                      // the 3DS repairs with Reed-Solomon parity
+    int64_t h264KeyMs = 0;                    // when the last key frame went out
+    int64_t h264ChangedMs = 0;                // when the picture last changed
+    bool h264Settled = true;                  // a key frame went out since it stands still
+    bool h264LossSinceKey = true;             // a packet got lost since the last key frame
+    bool h264SecondKey = false;               // one more key frame right after the first
+    int h264Bitrate = 8'000'000;
+    int h264Silent = 0;                       // statistics in a row in which the 3DS showed nothing
+    std::vector<uint16_t> h264Last;
+    std::vector<uint8_t> h264Yuv, h264Out;
+    uint64_t statsKeys = 0, statsKeyAsks = 0;
 
     // steady picture rate (tiles every tileDiv-th DS frame), see tilePace
     bool tileDivFits(int d) const;

@@ -112,6 +112,7 @@ DefaultList<bool> DefaultBools =
 #endif
     {"DSi.DSP.HLE", true},
     {"Instance*.RTC.SyncToHost", true},
+    {"Link.H264", true},   // melonDS Link: bottom screen as H.264 on a New 3DS
 };
 
 DefaultList<std::string> DefaultStrings =

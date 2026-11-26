@@ -42,6 +42,7 @@ const Entry kTexts[] = {
     {"menu.autoconnect", "Connect automatically when melonDS starts", "Beim Start automatisch verbinden"},
     {"menu.skipdup", "Skip presenting duplicate frames", "Doppelte Bilder nicht anzeigen"},
     {"menu.video", "Picture on the 3DS", "Bild auf dem 3DS"},
+    {"menu.video.h264", "Bottom screen as H.264 on a New 3DS (smoother)", "Unteres Bild als H.264 auf dem New 3DS (flüssiger)"},
     {"menu.video.tile20", "20 pictures a second for 30 fps games too (uneven, but more often)", "20 Bilder pro Sekunde auch bei 30-fps-Spielen (ungleichmäßig, aber öfter)"},
     {"menu.video.prio", "WiFi priority of the picture (from the next connect):", "WLAN-Priorität des Bildes (ab der nächsten Verbindung):"},
     {"menu.video.prio.video", "Video (default)", "Video (Standard)"},
