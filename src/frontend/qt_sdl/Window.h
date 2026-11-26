@@ -282,6 +282,8 @@ public:
     bool linkPausedByLid = false;
     QString linkStatusText();
     std::string linkStatusLines();   // the lines for the corner of the screen
+    bool linkWindowBig();            // fullscreen or a big window (the status may show)
+    bool linkStatusBigOnly = true;   // the status only in fullscreen or a big window
     bool linkStatusBattery = true, linkStatusWifi = true;
     QMenu* linkNotesMenu = nullptr;
     std::string linkRunningGame();

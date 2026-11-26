@@ -1163,9 +1163,11 @@ void Client::videoWorker()
             // previews (or lost tiles) on the 3DS: sharpen them at once
             sendTiles(frame);
         }
-        else if (same && !tileHeld && ++tileSameCount % 4 == 0)
+        else if (same && !tileHeld && ++tileSameCount % 12 == 0)
         {
-            sendTiles(frame);   // the slow refresh
+            // the slow refresh: 5 a second (lost packets are repaired through the receipts
+            // anyway; 15 a second cost ~43 KB/s of WiFi for a picture that stands still)
+            sendTiles(frame);
         }
         else if (!gotFrame && !lastFrame.empty() && !tileHeld)
         {

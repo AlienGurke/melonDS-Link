@@ -42,6 +42,8 @@
 #include <QVector>
 #include <QCommandLineParser>
 #include <QDesktopServices>
+#include <functional>
+#include <QScreen>
 #include <QUrl>
 #include <QDir>
 
@@ -678,51 +680,39 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             QAction* actLinkRoms = menu->addAction("");
             linkTexts.push_back({actLinkRoms, "menu.roms"});
             connect(actLinkRoms, &QAction::triggered, this, [this] { LinkRomDialog::openDlg(this); });
-            QAction* actLinkFolder = menu->addAction("");
-            linkTexts.push_back({actLinkFolder, "menu.folder"});
-            connect(actLinkFolder, &QAction::triggered, this, []
+            // the folders (as in Azahar-Link: Backups, ROMs, Screenshots, Debug)
             {
-                QString dir = QString::fromStdString(Link::Session::BaseDir());
-                QDir().mkpath(dir + "/Backups");
-                QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
-            });
-            QAction* actLinkShots = menu->addAction("");
-            linkTexts.push_back({actLinkShots, "menu.screenshots"});
-            connect(actLinkShots, &QAction::triggered, this, []
-            {
-                QString dir = QString::fromStdString(Link::Session::ScreenshotDir());
-                QDir().mkpath(dir);
-                QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
-            });
+                QMenu* folders = menu->addMenu("");
+                linkMenus.push_back({folders, "menu.folders"});
+                auto addFolder = [this, folders](const char* key, std::function<std::string()> dir)
+                {
+                    QAction* a = folders->addAction("");
+                    linkTexts.push_back({a, key});
+                    connect(a, &QAction::triggered, this, [dir]
+                    {
+                        QString d = QString::fromStdString(dir());
+                        QDir().mkpath(d);
+                        QDesktopServices::openUrl(QUrl::fromLocalFile(d));
+                    });
+                };
+                addFolder("menu.folder.backups", [] { return Link::Session::BaseDir() + "/Backups"; });
+                addFolder("menu.folder.roms", [] { return Link::Session::RomCacheDir(); });
+                addFolder("menu.folder.screenshots", [] { return Link::Session::ScreenshotDir(); });
+                addFolder("menu.folder.debug", [] { return Link::Session::DebugDir(); });
+            }
 
-            actLinkPauseOnLoss = menu->addAction("");
-            actLinkPauseOnLoss->setCheckable(true);
-            actLinkPauseOnLoss->setChecked(!globalCfg.GetBool("Link.NoPauseOnLoss"));
-            linkTexts.push_back({actLinkPauseOnLoss, "menu.pauseonloss"});
-            connect(actLinkPauseOnLoss, &QAction::toggled, this, [this](bool on)
-            {
-                globalCfg.SetBool("Link.NoPauseOnLoss", !on);
-                Config::Save();
-            });
-            actLinkPauseOnLid = menu->addAction("");
-            actLinkPauseOnLid->setCheckable(true);
-            actLinkPauseOnLid->setChecked(!globalCfg.GetBool("Link.NoPauseOnLid"));
-            linkTexts.push_back({actLinkPauseOnLid, "menu.pauseonlid"});
-            connect(actLinkPauseOnLid, &QAction::toggled, this, [this](bool on)
-            {
-                globalCfg.SetBool("Link.NoPauseOnLid", !on);
-                Config::Save();
-            });
-            actLinkBlackout = menu->addAction("");
-            actLinkBlackout->setCheckable(true);
-            actLinkBlackout->setChecked(globalCfg.GetBool("Link.BlackWhenClosed"));
-            linkTexts.push_back({actLinkBlackout, "menu.blackout"});
-            connect(actLinkBlackout, &QAction::toggled, this, [this](bool on)
-            {
-                globalCfg.SetBool("Link.BlackWhenClosed", on);
-                Config::Save();
-            });
-            actLinkAutoConnect = menu->addAction("");
+            // the settings, in groups (the same groups as in Azahar-Link)
+            menu->addSeparator();
+            QMenu* connMenu = menu->addMenu("");
+            linkMenus.push_back({connMenu, "menu.connection"});
+            QMenu* videoMenu = menu->addMenu("");
+            linkMenus.push_back({videoMenu, "menu.video"});
+            QMenu* pcMenu = menu->addMenu("");
+            linkMenus.push_back({pcMenu, "menu.pc"});
+            QMenu* saveMenu = menu->addMenu("");
+            linkMenus.push_back({saveMenu, "menu.saves"});
+
+            actLinkAutoConnect = connMenu->addAction("");
             actLinkAutoConnect->setCheckable(true);
             actLinkAutoConnect->setChecked(globalCfg.GetBool("Link.AutoConnect"));
             linkTexts.push_back({actLinkAutoConnect, "menu.autoconnect"});
@@ -731,13 +721,38 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 globalCfg.SetBool("Link.AutoConnect", on);
                 Config::Save();
             });
+            actLinkPauseOnLoss = connMenu->addAction("");
+            actLinkPauseOnLoss->setCheckable(true);
+            actLinkPauseOnLoss->setChecked(!globalCfg.GetBool("Link.NoPauseOnLoss"));
+            linkTexts.push_back({actLinkPauseOnLoss, "menu.pauseonloss"});
+            connect(actLinkPauseOnLoss, &QAction::toggled, this, [this](bool on)
+            {
+                globalCfg.SetBool("Link.NoPauseOnLoss", !on);
+                Config::Save();
+            });
+            actLinkPauseOnLid = connMenu->addAction("");
+            actLinkPauseOnLid->setCheckable(true);
+            actLinkPauseOnLid->setChecked(!globalCfg.GetBool("Link.NoPauseOnLid"));
+            linkTexts.push_back({actLinkPauseOnLid, "menu.pauseonlid"});
+            connect(actLinkPauseOnLid, &QAction::toggled, this, [this](bool on)
+            {
+                globalCfg.SetBool("Link.NoPauseOnLid", !on);
+                Config::Save();
+            });
+            actLinkBlackout = pcMenu->addAction("");
+            actLinkBlackout->setCheckable(true);
+            actLinkBlackout->setChecked(globalCfg.GetBool("Link.BlackWhenClosed"));
+            linkTexts.push_back({actLinkBlackout, "menu.blackout"});
+            connect(actLinkBlackout, &QAction::toggled, this, [this](bool on)
+            {
+                globalCfg.SetBool("Link.BlackWhenClosed", on);
+                Config::Save();
+            });
             // the picture on the 3DS: 20 a second for 30 fps games too, the WiFi priority class
             {
                 Link::Get().optionTile20 = globalCfg.GetBool("Link.Tile20");
                 Link::Get().optionH264 = globalCfg.GetBool("Link.H264");
                 Link::Get().wifiPrio = std::clamp(globalCfg.GetInt("Link.WifiPrio"), 0, 2);
-                QMenu* videoMenu = menu->addMenu("");
-                linkMenus.push_back({videoMenu, "menu.video"});
                 connect(videoMenu, &QMenu::aboutToShow, this, [this, videoMenu]
                 {
                     videoMenu->clear();
@@ -762,13 +777,13 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                         Config::Save();
                     });
                     videoMenu->addSeparator();
-                    QAction* head = videoMenu->addAction(Link::Tr("menu.video.prio"));
-                    head->setEnabled(false);
-                    auto* group = new QActionGroup(videoMenu);
+                    // the picture's WiFi class (the buttons are always the top class)
+                    QMenu* prio = videoMenu->addMenu(Link::Tr("menu.video.prio"));
+                    auto* group = new QActionGroup(prio);
                     static const char* keys[] = {"menu.video.prio.video", "menu.video.prio.background", "menu.video.prio.normal"};
-                    for (int p = 0; p < 3; p++)
+                    for (int p : {0, 2, 1})   // from the highest to the lowest
                     {
-                        QAction* a = videoMenu->addAction(Link::Tr(keys[p]));
+                        QAction* a = prio->addAction(Link::Tr(keys[p]));
                         a->setCheckable(true);
                         a->setChecked(Link::Get().wifiPrio == p);
                         group->addAction(a);
@@ -784,7 +799,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             // the picture on the PC: frames that did not change are not shown again
             {
                 Link::Pacing::SetSkipDuplicates(globalCfg.GetBool("Link.SkipDuplicates"));
-                QAction* act = menu->addAction("");
+                QAction* act = pcMenu->addAction("");
                 act->setCheckable(true);
                 act->setChecked(Link::Pacing::SkipDuplicates());
                 linkTexts.push_back({act, "menu.skipdup"});
@@ -802,8 +817,8 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 int days = globalCfg.GetInt("Link.BackupDaysPlus1");
                 Link::Session::backupKeep = keep > 0 ? keep - 1 : 3;
                 Link::Session::backupDays = days > 0 ? days - 1 : 7;
-                QAction* actKeep = menu->addAction("");
-                QAction* actDays = menu->addAction("");
+                QAction* actKeep = saveMenu->addAction("");
+                QAction* actDays = saveMenu->addAction("");
                 auto label = [actKeep, actDays]
                 {
                     actKeep->setText(Link::Tr("menu.backupkeep").arg(Link::Session::backupKeep.load()));
@@ -836,7 +851,8 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             }
             // 3DS battery and WiFi on the PC screen
             linkStatusMode = std::clamp(globalCfg.GetInt("Link.StatusMode"), 0, 8);
-            linkStatusMenu = menu->addMenu("");
+            pcMenu->addSeparator();
+            linkStatusMenu = pcMenu->addMenu("");
             linkMenus.push_back({linkStatusMenu, "menu.status"});
             connect(linkStatusMenu, &QMenu::aboutToShow, this, [this]
             {
@@ -882,9 +898,21 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     globalCfg.SetBool("Link.StatusNoWifi", !on);
                     Config::Save();
                 });
+                // in a small window it would cover the game: only when the window is big
+                linkStatusMenu->addSeparator();
+                QAction* big = linkStatusMenu->addAction(Link::Tr("status.bigonly"));
+                big->setCheckable(true);
+                big->setChecked(linkStatusBigOnly);
+                connect(big, &QAction::toggled, this, [this](bool on)
+                {
+                    linkStatusBigOnly = on;
+                    globalCfg.SetBool("Link.StatusSmallToo", !on);
+                    Config::Save();
+                });
             });
             linkStatusBattery = !globalCfg.GetBool("Link.StatusNoBattery");
             linkStatusWifi = !globalCfg.GetBool("Link.StatusNoWifi");
+            linkStatusBigOnly = !globalCfg.GetBool("Link.StatusSmallToo");
 
             // which messages melonDS shows (all by default; errors always)
             static const struct { Link::Note note; const char* cfg; const char* key; } kNotes[] = {
@@ -1108,14 +1136,6 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 dlg.exec();
             });
 
-            QAction* actLinkDebugFolder = debugMenu->addAction("");
-            linkTexts.push_back({actLinkDebugFolder, "menu.debugfolder"});
-            connect(actLinkDebugFolder, &QAction::triggered, this, []
-            {
-                QString dir = QString::fromStdString(Link::Session::DebugDir());
-                QDir().mkpath(dir);
-                QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
-            });
 
             // games picked on the 3DS are prepared and booted from here (instance 0)
             if (windowID == 0 && emuInstance->getInstanceID() == 0)
@@ -2293,6 +2313,17 @@ void MainWindow::onLANStartClient()
     LANStartClientDialog::openDlg(this);
 }
 
+bool MainWindow::linkWindowBig()
+{
+    // fullscreen, maximised, or at least three quarters of the screen wide or high
+    if (isFullScreen() || isMaximized()) return true;
+    QScreen* scr = screen();
+    if (!scr) return true;
+    QRect area = scr->availableGeometry();
+    QRect mine = frameGeometry();
+    return mine.width() >= area.width() * 3 / 4 || mine.height() >= area.height() * 3 / 4;
+}
+
 QString MainWindow::linkStatusText()
 {
     auto cs = Link::Get().GetConsoleState();
@@ -2475,6 +2506,8 @@ void MainWindow::onLinkTick()
                 if (nowS - lastStatusShown < 6) shownMode = 2;
             }
         }
+        // only in fullscreen or a big window (setting): in a small one it covers the game
+        if (shownMode && linkStatusBigOnly && !linkWindowBig()) shownMode = 0;
         std::string lines = shownMode ? linkStatusLines() : std::string();
         panel->osdSetStatus(lines.c_str(), lines.empty() ? 0 : shownMode);
 
