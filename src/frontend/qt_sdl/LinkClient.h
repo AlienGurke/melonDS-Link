@@ -172,8 +172,11 @@ public:
     };
     ConsoleState GetConsoleState() { std::lock_guard<std::mutex> l(inputMutex); return console; }
 
-    // settings made in melonDS that the 3DS app needs (LINK_OPT_*)
+    // settings made in melonDS that the 3DS app needs (LINK_OPT_*), with the time jump
     bool SetOptions(uint32_t opts);
+    // the time jump of the DS clock in seconds (3DS Link > Clock; 0 = real time)
+    std::atomic<int64_t> timeJump { 0 };
+    int64_t TimeJump() const { return timeJump.load(); }
     // the user wants the game ended / is back in the game (3DS menu)
     bool TakeStopRequest() { return stopWanted.exchange(false); }
     bool TakeResumeRequest() { return resumeWanted.exchange(false); }
@@ -229,6 +232,7 @@ private:
     std::atomic<bool> lidClosed { false };    // closed (and awake): nobody sees the picture
     std::atomic<bool> idle { false };         // Azahar is the active emulator on the 3DS
     std::atomic<uint32_t> options { 0 };      // LINK_OPT_* last sent
+    bool timeJumpTold = false;                // "time jump on the 3DS" said once
     bool lostByLid = false;                   // worker thread only
     std::string remoteLang = "en";
     bool haveBakList = false, haveRestore = false;

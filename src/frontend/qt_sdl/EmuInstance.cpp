@@ -47,6 +47,7 @@
 #include "DSi_I2C.h"
 #include "FreeBIOS.h"
 #include "main.h"
+#include "LinkClient.h"
 
 #include "NDSCart/CartSD.h"
 
@@ -1207,9 +1208,25 @@ void EmuInstance::setDateTime()
 {
     QDateTime hosttime = QDateTime::currentDateTime();
     QDateTime time = hosttime.addSecs(localCfg.GetInt64("RTC.Offset"));
+    // melonDS Link: a time jump (3DS Link > Clock) counts from the start on
+    time = time.addSecs(Link::Get().TimeJump());
 
     nds->RTC.SetDateTime(time.date().year(), time.date().month(), time.date().day(),
                          time.time().hour(), time.time().minute(), time.time().second());
+}
+
+// melonDS Link: the DS clock jumps (like changing the raw RTC of a DS - the firmware's
+// clock offset stays, so games do not see a changed clock); at once, while the game runs
+void EmuInstance::linkShiftClock(qint64 seconds)
+{
+    if (!nds) return;
+    int y, mo, d, h, mi, s;
+    nds->RTC.GetDateTime(y, mo, d, h, mi, s);
+    QDateTime t(QDate(y, mo, d), QTime(h, mi, s));
+    if (!t.isValid()) return;
+    t = t.addSecs(seconds);
+    nds->RTC.SetDateTime(t.date().year(), t.date().month(), t.date().day(),
+                         t.time().hour(), t.time().minute(), t.time().second());
 }
 
 void EmuInstance::syncRTC()

@@ -1187,6 +1187,10 @@ void EmuThread::handleMessages()
         case msg_EnableCheats:
             emuInstance->enableCheats(msg.param.value<bool>());
             break;
+
+        case msg_LinkShiftClock:
+            emuInstance->linkShiftClock(msg.param.value<qint64>());
+            break;
         }
 
         msgSemaphore.release();
@@ -1382,6 +1386,12 @@ int EmuThread::importSavefile(const QString& filename)
     sendMessage({.type = msg_ImportSavefile, .param = filename});
     waitMessage(2);
     return msgResult;
+}
+
+void EmuThread::linkShiftClock(qint64 seconds)
+{
+    sendMessage({.type = msg_LinkShiftClock, .param = seconds});
+    waitMessage();
 }
 
 void EmuThread::enableCheats(bool enable)

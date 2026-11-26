@@ -284,6 +284,15 @@ public:
     std::string linkStatusLines();   // the lines for the corner of the screen
     bool linkWindowBig();            // fullscreen or a big window (the status may show)
     bool linkStatusBigOnly = true;   // the status only in fullscreen or a big window
+    // the clock (3DS Link > Clock): time jump in days, "remove the lock"
+    int linkJumpDays = 0;
+    int linkPenaltyStep = 0;         // 1 = step 1 done (the clock is behind)
+    int linkPenaltyDays = 3;
+    void linkSetJump(int days);
+    bool linkJumpNeutralForConnect();
+    QString linkJumpText(int days);
+    void linkBuildClockMenu(QMenu* m);
+    void linkSetPenaltyStep(int step);
     bool linkStatusBattery = true, linkStatusWifi = true;
     QMenu* linkNotesMenu = nullptr;
     std::string linkRunningGame();

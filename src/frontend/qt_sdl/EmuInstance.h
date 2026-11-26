@@ -260,6 +260,7 @@ private:
     void loadRTCData();
     void saveRTCData();
     void setDateTime();
+    void linkShiftClock(qint64 seconds);   // melonDS Link: time jump of the DS clock
     void syncRTC();
 
     bool deleting;

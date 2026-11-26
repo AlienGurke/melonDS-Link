@@ -86,7 +86,8 @@ enum LinkCommand
     LINK_CMD_BACKUPLIST = 22,/* in: u32 token + UTF-8 text: first line the ROM path it
                                 belongs to, then one line per save backup on the PC
                                 (newest first). Answer to LINK_EVENT_BACKUPS. */
-    LINK_CMD_OPTIONS    = 23,/* in: u32 LINK_OPT_* (settings made in melonDS)  out: - */
+    LINK_CMD_OPTIONS    = 23,/* in: u32 LINK_OPT_* (settings made in the emulator); newer
+                                emulators add LinkOptionsExt  out: - */
     /* 24 was a first version of LINK_CMD_ARCREAD without offsets (files over 256 KB
        failed, like the Mii database); it is no longer answered */
     LINK_CMD_ARCREAD    = 25,/* in: LinkArchiveReq + path inside the archive
@@ -99,7 +100,9 @@ enum LinkCommand
                                 add u64 user time offset (config block 0x30001), u64 the
                                 raw RTC (MCU registers, ms since 1900), u64 the RTC as
                                 PTM reads it (ms since 1900), u64 config block 0x30002;
-                                LINK_TIME_UNKNOWN where not readable */
+                                LINK_TIME_UNKNOWN where not readable; then (newer apps)
+                                s64 the time jump made in the app (seconds the RTC is
+                                ahead of the real time, 0 = none) */
     LINK_CMD_ARCLIST    = 27,/* in: LinkArchiveReq (offset/length unused) + folder inside
                                 the archive  out: LinkDirEntry list (NOTFOUND: no such
                                 folder, DENIED: the archive does not exist / no access) */
@@ -181,6 +184,16 @@ enum LinkCommand
 
 #define LINK_OPT_KEEP_AWAKE 1u     /* closing the 3DS does not put it to sleep (game keeps running) */
 
+/* LINK_CMD_OPTIONS from newer emulators: after the u32 options. The 3DS shows the time
+   jump of the emulator, and can set its own clock to the PC's time ("clock from the PC"). */
+typedef struct LinkOptionsExt
+{
+    int64_t timeJump;     /* seconds the emulator's game clock is ahead of the real time
+                             (negative: behind; 0 = none) */
+    int64_t pcLocalMs;    /* the PC's local time (time zone, summer time) when it was sent,
+                             in ms since 1900-01-01 as if it were UTC (like osGetTime) */
+} LinkOptionsExt;
+
 #define LINK_SESSION_LAUNCH_DONE 1u   /* a game picked on the 3DS was handled (started or failed) */
 
 /* LinkHelloResp.flags */
@@ -226,6 +239,8 @@ enum LinkStatus
     LINK_ERR_IO          = 4,
     LINK_ERR_DENIED      = 5,
     LINK_ERR_VERSION     = 6,
+    LINK_ERR_TIMEJUMP    = 7,   /* LINK_CMD_HELLO: a time jump is active on the 3DS - it
+                                   has to be undone there first (the answer is filled in) */
 };
 
 #if defined(_MSC_VER)

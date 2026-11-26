@@ -705,6 +705,18 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             menu->addSeparator();
             QMenu* connMenu = menu->addMenu("");
             linkMenus.push_back({connMenu, "menu.connection"});
+            QMenu* clockMenu = menu->addMenu("");
+            linkMenus.push_back({clockMenu, "menu.clock"});
+            {
+                // the clock: time jump (like RTChanger), "remove the lock"
+                linkJumpDays = globalCfg.GetInt("Link.TimeJumpDays");
+                linkPenaltyStep = globalCfg.GetInt("Link.PenaltyStep");
+                int pd = globalCfg.GetInt("Link.PenaltyDays");
+                linkPenaltyDays = pd > 0 ? pd : 3;
+                Link::Get().timeJump = (int64_t)linkJumpDays * 86400;
+                clockMenu->addAction("");   // (filled when it opens)
+                connect(clockMenu, &QMenu::aboutToShow, this, [this, clockMenu] { linkBuildClockMenu(clockMenu); });
+            }
             QMenu* videoMenu = menu->addMenu("");
             linkMenus.push_back({videoMenu, "menu.video"});
             QMenu* pcMenu = menu->addMenu("");
@@ -1168,8 +1180,13 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                     QString host = globalCfg.GetQString("Link.Host");
                     if (!host.isEmpty())
                     {
-                        Link::Get().Connect(host.toStdString());
-                        if (Link::NoteShown(Link::Note::Connection)) emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
+                        // (a time jump: asked once the window is there)
+                        QTimer::singleShot(0, this, [this, host]
+                        {
+                            if (!linkJumpNeutralForConnect()) return;
+                            Link::Get().Connect(host.toStdString());
+                            if (Link::NoteShown(Link::Note::Connection)) emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
+                        });
                     }
                 }
                 linkTimer = new QTimer(this);
@@ -2313,6 +2330,100 @@ void MainWindow::onLANStartClient()
     LANStartClientDialog::openDlg(this);
 }
 
+// "+1 day", "-3 days"
+QString MainWindow::linkJumpText(int days)
+{
+    QString n = (days > 0 ? "+" : "") + QString::number(days);
+    return Link::Tr(std::abs(days) == 1 ? "clock.day" : "clock.days").arg(n);
+}
+
+// the DS clock jumps: at once in the game that runs (like changing the raw RTC), noted for
+// the next start, shown on the 3DS
+void MainWindow::linkSetJump(int days)
+{
+    if (days == linkJumpDays) return;
+    qint64 delta = (qint64)(days - linkJumpDays) * 86400;
+    linkJumpDays = days;
+    globalCfg.SetInt("Link.TimeJumpDays", days);
+    Config::Save();
+    Link::Get().timeJump = (int64_t)days * 86400;
+    if (emuThread->emuIsActive()) emuThread->linkShiftClock(delta);
+    Link::Session::Log("clock: time jump " + std::to_string(days) + " days");
+    QString msg = days == 0 ? Link::Tr("clock.real") : Link::Tr("clock.now").arg(linkJumpText(days));
+    emuInstance->osdAddMessage(0, "%s", msg.toStdString().c_str());
+}
+
+void MainWindow::linkSetPenaltyStep(int step)
+{
+    linkPenaltyStep = step;
+    globalCfg.SetInt("Link.PenaltyStep", step);
+    Config::Save();
+}
+
+// connecting with a time jump: undo it first (the 3DS would get saves of another day)
+bool MainWindow::linkJumpNeutralForConnect()
+{
+    if (linkJumpDays == 0) return true;
+    if (QMessageBox::question(this, "melonDS Link", Link::Tr("clock.connect").arg(linkJumpText(linkJumpDays))) != QMessageBox::Yes)
+        return false;
+    linkSetPenaltyStep(0);
+    linkSetJump(0);
+    return true;
+}
+
+void MainWindow::linkBuildClockMenu(QMenu* m)
+{
+    m->clear();
+    QAction* info = m->addAction(linkJumpDays == 0 ? Link::Tr("clock.none") : Link::Tr("clock.info").arg(linkJumpText(linkJumpDays)));
+    info->setEnabled(false);
+    m->addSeparator();
+    connect(m->addAction(Link::Tr("clock.fwd")), &QAction::triggered, this, [this] { linkSetJump(linkJumpDays + 1); });
+    connect(m->addAction(Link::Tr("clock.back")), &QAction::triggered, this, [this] { linkSetJump(linkJumpDays - 1); });
+    connect(m->addAction(Link::Tr("clock.set")), &QAction::triggered, this, [this]
+    {
+        bool ok = false;
+        int d = QInputDialog::getInt(this, "melonDS Link", Link::Tr("clock.set.ask"), linkJumpDays, -3650, 3650, 1, &ok);
+        if (ok) linkSetJump(d);
+    });
+    QAction* real = m->addAction(Link::Tr("clock.reset"));
+    real->setEnabled(linkJumpDays != 0);
+    connect(real, &QAction::triggered, this, [this] { linkSetPenaltyStep(0); linkSetJump(0); });
+    m->addSeparator();
+    // "remove the lock" (the game's penalty after a jump back): N days behind the real time,
+    // start the game once (the lock appears), then back to the real time - the lock is gone
+    if (linkPenaltyStep == 0)
+    {
+        QAction* a = m->addAction(Link::Tr("clock.penalty1").arg(linkPenaltyDays));
+        connect(a, &QAction::triggered, this, [this]
+        {
+            if (QMessageBox::question(this, "melonDS Link", Link::Tr("clock.penalty1.ask").arg(linkPenaltyDays)) != QMessageBox::Yes)
+                return;
+            linkSetPenaltyStep(1);
+            linkSetJump(-linkPenaltyDays);
+        });
+    }
+    else
+    {
+        QAction* a = m->addAction(Link::Tr("clock.penalty2"));
+        connect(a, &QAction::triggered, this, [this]
+        {
+            linkSetPenaltyStep(0);
+            linkSetJump(0);
+            emuInstance->osdAddMessage(0, "%s", Link::TrS("clock.penalty.done").c_str());
+        });
+    }
+    QAction* days = m->addAction(Link::Tr("clock.penaltydays").arg(linkPenaltyDays));
+    connect(days, &QAction::triggered, this, [this]
+    {
+        bool ok = false;
+        int d = QInputDialog::getInt(this, "melonDS Link", Link::Tr("clock.penaltydays.ask"), linkPenaltyDays, 1, 30, 1, &ok);
+        if (!ok) return;
+        linkPenaltyDays = d;
+        globalCfg.SetInt("Link.PenaltyDays", d);
+        Config::Save();
+    });
+}
+
 bool MainWindow::linkWindowBig()
 {
     // fullscreen, maximised, or at least three quarters of the screen wide or high
@@ -2364,8 +2475,14 @@ void MainWindow::retranslateLink()
     if (actLinkStatusInfo)
     {
         bool show = st == Link::State::Connected && Link::Get().GetConsoleState().known;
-        actLinkStatusInfo->setVisible(show);
-        if (show) actLinkStatusInfo->setText(linkStatusText());
+        QString text = show ? linkStatusText() : QString();
+        if (linkJumpDays != 0)
+        {
+            QString j = Link::Tr("clock.info").arg(linkJumpText(linkJumpDays));
+            text = text.isEmpty() ? j : text + " · " + j;
+        }
+        actLinkStatusInfo->setVisible(!text.isEmpty());
+        if (!text.isEmpty()) actLinkStatusInfo->setText(text);
     }
     QString host = QString::fromStdString(Link::Get().GetHost());
     if (st == Link::State::Connected) actLinkConnect->setText(Link::Tr("menu.connected").arg(host));
@@ -2383,6 +2500,7 @@ void MainWindow::onLinkConnect()
 
     globalCfg.SetQString("Link.Host", host);
     Config::Save();
+    if (!linkJumpNeutralForConnect()) return;
 
     Link::Get().Connect(host.toStdString());
     if (Link::NoteShown(Link::Note::Connection)) emuInstance->osdAddMessage(0, "%s", Link::Tr("connect.connecting").arg(host).toStdString().c_str());
@@ -2399,6 +2517,18 @@ std::string MainWindow::linkRunningGame()
 void MainWindow::onLinkTick()
 {
     auto st = Link::Get().GetState();
+
+    // the game ended with a time jump on: before playing on the 3DS, undo it / remove the lock
+    {
+        static bool wasActive = false;
+        bool active = emuThread->emuIsActive();
+        if (wasActive && !active && linkJumpDays != 0 && st == Link::State::Connected)
+            QTimer::singleShot(0, this, [this]
+            {
+                QMessageBox::information(this, "melonDS Link", Link::Tr("clock.reminder").arg(linkJumpText(linkJumpDays)));
+            });
+        wasActive = active;
+    }
 
     // the 3DS went away (app closed, WiFi gone) in the middle of a game: pause,
     // so nothing happens without a controller. Not when disconnected on purpose.
@@ -2507,8 +2637,16 @@ void MainWindow::onLinkTick()
             }
         }
         // only in fullscreen or a big window (setting): in a small one it covers the game
-        if (shownMode && linkStatusBigOnly && !linkWindowBig()) shownMode = 0;
+        bool big = !linkStatusBigOnly || linkWindowBig();
+        if (shownMode && !big) shownMode = 0;
         std::string lines = shownMode ? linkStatusLines() : std::string();
+        // a time jump is on: always a line (fixed), so it is not forgotten
+        if (linkJumpDays != 0 && big && emuThread->emuIsActive())
+        {
+            std::string j = Link::Tr("clock.info").arg(linkJumpText(linkJumpDays)).toStdString();
+            lines = lines.empty() ? j : j + "\n" + lines;
+            if (!shownMode) shownMode = 1;
+        }
         panel->osdSetStatus(lines.c_str(), lines.empty() ? 0 : shownMode);
 
         // closed: pause (setting) - the 3DS reports it before it goes to sleep
@@ -2536,11 +2674,13 @@ void MainWindow::onLinkTick()
         // the 3DS needs to know: sleep when closed, or stay awake (game runs on)
         static uint32_t optsConn = 0;
         static int optsSent = -1;
+        static int jumpSent = 0;
         uint32_t opts = pauseOnLid ? 0 : LINK_OPT_KEEP_AWAKE;
-        if (st == Link::State::Connected && (conn != optsConn || (int)opts != optsSent))
+        if (st == Link::State::Connected && (conn != optsConn || (int)opts != optsSent || linkJumpDays != jumpSent))
         {
             optsConn = conn;
             optsSent = (int)opts;
+            jumpSent = linkJumpDays;
             std::thread([opts] { Link::Get().SetOptions(opts); }).detach();
         }
     }

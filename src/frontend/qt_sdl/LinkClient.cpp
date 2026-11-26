@@ -3,6 +3,7 @@
 */
 
 #include "LinkClient.h"
+#include <QDateTime>
 #include "LinkLang.h"
 #include "LinkPacing.h"
 #include "LinkSession.h"
@@ -668,8 +669,16 @@ std::string Client::Tr3DS(const char* key)
 bool Client::SetOptions(uint32_t opts)
 {
     options = opts;
+    // with the time jump (shown on the 3DS) and the PC's local time (for "clock from the PC")
+    uint8_t p[4 + sizeof(LinkOptionsExt)];
+    memcpy(p, &opts, 4);
+    LinkOptionsExt ext = {};
+    ext.timeJump = timeJump.load();
+    QDateTime now = QDateTime::currentDateTime();
+    ext.pcLocalMs = now.toMSecsSinceEpoch() + (int64_t)now.offsetFromUtc() * 1000 + 2208988800000LL;
+    memcpy(p + 4, &ext, sizeof(ext));
     uint16_t status;
-    return Request(LINK_CMD_OPTIONS, &opts, 4, status) && status == LINK_OK;
+    return Request(LINK_CMD_OPTIONS, p, sizeof(p), status) && status == LINK_OK;
 }
 
 bool Client::SetStatusText(const std::string& text)
@@ -738,6 +747,21 @@ void Client::worker(std::string host)
             state = State::Disconnected;
             return;
         }
+        if (helloOk && status == LINK_ERR_TIMEJUMP)
+        {
+            // a time jump is active on the 3DS: undo it there first. Keep knocking (it
+            // reboots after that), the message once
+            if (!timeJumpTold)
+            {
+                timeJumpTold = true;
+                log("3DS: a time jump is active there - waiting until it is undone");
+                pushMessage(TrS("clock.3dsjump"));
+            }
+            closeSockets();
+            for (int i = 0; i < 30 && !stopRequested; i++) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+        timeJumpTold = false;
         if (!helloOk || resp.size() < sizeof(LinkHelloResp))
         {
             closeSockets();

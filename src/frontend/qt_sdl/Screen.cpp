@@ -792,7 +792,7 @@ void ScreenPanel::osdUpdate()
         if (statusMode != 0 && !statusText.empty())
         {
             size_t start = 0;
-            while (statusLines < 2 && start <= statusText.size())
+            while (statusLines < 3 && start <= statusText.size())
             {
                 size_t nl = statusText.find('\n', start);
                 std::string line = statusText.substr(start, nl == std::string::npos ? std::string::npos : nl - start);

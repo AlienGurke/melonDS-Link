@@ -132,7 +132,7 @@ protected:
     unsigned int osdID;
     std::deque<OSDItem> osdItems;
 
-    OSDItem statusItems[2] {};
+    OSDItem statusItems[3] {};
     int statusLines = 0;               // rendered lines
     std::string statusText;
     int statusMode = 0;

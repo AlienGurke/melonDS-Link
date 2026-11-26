@@ -84,6 +84,8 @@ public:
         msg_ImportSavefile,
 
         msg_EnableCheats,
+
+        msg_LinkShiftClock,   // melonDS Link: time jump (seconds) of the DS clock, at once
     };
 
     struct Message
@@ -126,6 +128,8 @@ public:
     int importSavefile(const QString& filename);
 
     void enableCheats(bool enable);
+    // melonDS Link: the DS clock (RTC) jumps by `seconds` at once (time jump)
+    void linkShiftClock(qint64 seconds);
 
     bool emuIsRunning();
     bool emuIsActive();
