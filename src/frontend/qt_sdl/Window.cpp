@@ -81,6 +81,7 @@
 #include "AboutDialog.h"
 #include "LinkClient.h"
 #include "LinkSession.h"
+#include "LinkActivity.h"
 #include "LinkPacing.h"
 #include "LinkRomDialog.h"
 #include "LinkLang.h"
@@ -699,6 +700,7 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
                 addFolder("menu.folder.roms", [] { return Link::Session::RomCacheDir(); });
                 addFolder("menu.folder.screenshots", [] { return Link::Session::ScreenshotDir(); });
                 addFolder("menu.folder.debug", [] { return Link::Session::DebugDir(); });
+                addFolder("menu.folder.playtime", [] { return Link::Activity::Folder(); });
             }
 
             // the settings, in groups (the same groups as in Azahar-Link)
@@ -723,6 +725,22 @@ MainWindow::MainWindow(int id, EmuInstance* inst, QWidget* parent) :
             linkMenus.push_back({pcMenu, "menu.pc"});
             QMenu* saveMenu = menu->addMenu("");
             linkMenus.push_back({saveMenu, "menu.saves"});
+            QMenu* playMenu = menu->addMenu("");
+            linkMenus.push_back({playMenu, "menu.playtime"});
+            {
+                // play time on this PC, for Dashboard-Link (as in Azahar-Link)
+                Link::Activity::SetEnabled(!globalCfg.GetBool("Link.NoPlaytime"));
+                QAction* a = playMenu->addAction("");
+                a->setCheckable(true);
+                a->setChecked(Link::Activity::Enabled());
+                linkTexts.push_back({a, "menu.playtime.on"});
+                connect(a, &QAction::toggled, this, [this](bool on)
+                {
+                    Link::Activity::SetEnabled(on);
+                    globalCfg.SetBool("Link.NoPlaytime", !on);
+                    Config::Save();
+                });
+            }
 
             actLinkAutoConnect = connMenu->addAction("");
             actLinkAutoConnect->setCheckable(true);

@@ -59,6 +59,7 @@
 #include "LinkLang.h"
 #include "LinkSession.h"
 #include "LinkPacing.h"
+#include "LinkActivity.h"
 #include <QDateTime>
 #include <QDir>
 #include <QImage>
@@ -584,6 +585,9 @@ void EmuThread::run()
         const double linkLoopStart = linkMs();
         if (emuInstance->instanceID == 0)
             MPInterface::Get().Process();
+        if (emuInstance->instanceID == 0)   // melonDS Link: play time on this PC
+            Link::Activity::Frame(emuActive && emuInstance->nds ? emuInstance->nds->NDSCartSlot.GetCart() : nullptr,
+                                  emuActive && emuStatus == emuStatus_Running);
         const double linkMpMs = linkMs() - linkLoopStart;
 
         double linkIn = linkMs();
@@ -977,6 +981,7 @@ void EmuThread::run()
         handleMessages();
         linkPrevMsgMs = linkMs() - linkMsgStart;
     }
+    if (emuInstance->instanceID == 0) Link::Activity::End();
 }
 
 void EmuThread::sendMessage(Message msg)

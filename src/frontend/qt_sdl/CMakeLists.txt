@@ -16,6 +16,7 @@ set(SOURCES_QT_SDL
     LinkH264.cpp
     LinkRomDialog.cpp
     LinkLang.cpp
+    LinkActivity.cpp
     lz4/lz4.c
     EmuThread.cpp
     CheatImportDialog.cpp
